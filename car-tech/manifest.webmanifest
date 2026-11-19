@@ -1,0 +1,13 @@
+{
+  "name": "فني السيارة",
+  "short_name": "فني السيارة",
+  "description": "فحص وتشخيص ذكي للسيارات عبر قطعة ELM327 بالبلوتوث",
+  "lang": "ar",
+  "dir": "rtl",
+  "start_url": "../index.html",
+  "scope": "../",
+  "display": "standalone",
+  "background_color": "#05080e",
+  "theme_color": "#070b12",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}
