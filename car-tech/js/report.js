@@ -1,6 +1,7 @@
 // Standalone HTML reports (open anywhere, no internet needed).
-import { esc, fmtDate, fmtTime } from './util.js';
+import { esc, fmtDate, fmtTime, safeImg } from './util.js';
 import { describeDtc } from './dtcdb.js';
+import { combineReadiness, readinessStats } from './obd.js';
 
 const CSS = `body{font-family:"IBM Plex Sans Arabic",Tahoma,sans-serif;background:#0a101a;color:#e6eefb;margin:0;padding:24px;line-height:1.6}
 .w{max-width:900px;margin:0 auto}h1{font-size:22px;margin:0}h2{font-size:17px;border-bottom:1px solid #22324d;padding-bottom:6px;margin-top:26px}
@@ -18,9 +19,9 @@ export function scanReportHtml(s, diag = []) {
   const K = { stored: 'مخزّن', pending: 'معلّق', perm: 'دائم', history: 'سابق' };
   let h = head('تقرير فحص السيارة', s.demo) + vehicle(s.vehicle);
   h += `<div class="card">تاريخ الفحص: ${fmtDate(s.t)} · البروتوكول: ${esc(s.protocol || '—')} · فولت البطارية: ${s.voltage ? s.voltage.toFixed(2) + 'V' : '—'}</div>`;
-  h += `<h2>ملخّص</h2><div class="card">إجمالي الأعطال: <b class="${s.dtcs.length ? 'bad' : 'ok'}">${s.dtcs.length}</b> · الكمبيوترات التي ترد: ${s.ecus.filter(e => !['noresp', 'unreach'].includes(e.status)).length}</div>`;
+  h += `<h2>ملخّص</h2><div class="card">إجمالي الأعطال: <b class="${(s.dtcs || []).length ? 'bad' : 'ok'}">${(s.dtcs || []).length}</b> · الكمبيوترات التي ترد: ${(s.ecus || []).filter(e => !['noresp', 'unreach'].includes(e.status)).length}</div>`;
   h += '<h2>الكمبيوترات والأعطال</h2>';
-  for (const e of s.ecus) {
+  for (const e of s.ecus || []) {
     const codes = [...['stored', 'pending', 'perm'].flatMap(k => (e.dtcs?.[k] || []).map(c => ({ c, k }))), ...(e.dtcs?.mfr || []).map(d => ({ c: d.code, k: d.kind, mfr: true }))];
     const st = { ok: '<span class="ok">سليم</span>', fault: '<span class="bad">فيه عطل</span>', noresp: '<span class="dim">لا يرد</span>', unreach: '<span class="dim">خارج الوصول</span>', partial: '<span class="warn">يرد — قراءة محدودة</span>' }[e.status] || '';
     h += `<div class="card"><b>${esc(e.name)}</b> <span class="mono dim">${esc(e.addr || '')}</span> — ${st} <span class="tag">${CONF[e.conf] || ''}</span>`;
@@ -29,19 +30,25 @@ export function scanReportHtml(s, diag = []) {
     if (e.readError) h += `<div class="warn">${esc(e.readError)}</div>`;
     h += '</div>';
   }
-  if (s.readiness?.length) {
+  const ecuName = ecu => (s.ecus || []).find(e => e.key === 'std:' + ecu)?.name || ecu;
+  const rdList = (s.readiness || []).filter(r => r && Array.isArray(r.mons));
+  if (rdList.length) {
+    // the car's status = all emission computers together (MIL on if any; complete only if all complete)
+    const all = combineReadiness(rdList.map(r => [r.ecu, r])), st = readinessStats(all);
     h += '<h2>الجاهزية</h2>';
-    for (const r of s.readiness) h += `<div class="card">لمبة المكينة: ${r.mil ? '<span class="bad">مضاءة</span>' : '<span class="ok">مطفأة</span>'}<table>${r.mons.map(m => `<tr><td>${esc(m.name)}</td><td>${!m.sup ? '<span class="dim">غير مدعوم</span>' : m.ready ? '<span class="ok">جاهز</span>' : '<span class="warn">غير جاهز</span>'}</td></tr>`).join('')}</table></div>`;
+    h += `<div class="card"><b>السيارة ككل</b> — لمبة المكينة: ${all.mil ? '<span class="bad">مضاءة</span>' : '<span class="ok">مطفأة</span>'} · الأنظمة المكتملة: ${st.ready}/${st.total}${st.notReady.length ? ` · غير جاهز: ${st.notReady.map(m => esc(m.name)).join('، ')}` : ''}</div>`;
+    for (const r of rdList) h += `<div class="card"><b>${esc(ecuName(r.ecu))}</b> — لمبة المكينة: ${r.mil ? '<span class="bad">مضاءة</span>' : '<span class="ok">مطفأة</span>'}<table>${r.mons.map(m => `<tr><td>${esc(m.name)}</td><td>${!m.sup ? '<span class="dim">غير مدعوم</span>' : m.ready ? '<span class="ok">جاهز</span>' : '<span class="warn">غير جاهز</span>'}</td></tr>`).join('')}</table></div>`;
   }
   if (s.freeze?.some(f => f.items?.length)) {
     h += '<h2>لقطة الحظة</h2>';
-    for (const f of s.freeze.filter(f => f.items?.length)) h += `<div class="card">الكود: <span class="mono">${esc(f.dtc || '?')}</span><table>${f.items.map(i => `<tr><td>${esc(i.name)}</td><td class="mono">${esc(i.text)} ${esc(i.unit || '')}</td></tr>`).join('')}</table></div>`;
+    for (const f of s.freeze.filter(f => f.items?.length)) h += `<div class="card"><b>${esc(ecuName(f.ecu))}</b> — الكود المسبّب: ${f.dtc ? `<span class="mono">${esc(f.dtc)}</span>` : '<span class="dim">غير معروف (الكمبيوتر لم يذكره)</span>'}<table>${f.items.map(i => `<tr><td>${esc(i.name)}</td><td class="mono">${esc(i.text)} ${esc(i.unit || '')}</td></tr>`).join('')}</table></div>`;
   }
   if (diag.length) {
     h += '<h2>التشخيص الموجّه (ترجيح)</h2>';
     for (const d of diag.slice(0, 5)) h += `<div class="card"><b>${esc(d.title)}</b> <span class="tag">تقديري</span><div class="dim">${d.evidence.map(esc).join(' · ')}</div><ul>${d.causes.map(c => `<li>${esc(c.t)} — ${Math.round(c.p * 100)}%</li>`).join('')}</ul><ol>${d.steps.map(x => `<li>${esc(x.t)}<div class="dim">القياس: ${esc(x.m)} · المتوقع: ${esc(x.e)}</div></li>`).join('')}</ol></div>`;
   }
-  if (s.photos?.length) h += '<h2>صور موثّقة</h2>' + s.photos.map(p => `<div class="card"><img src="${p.data}" style="max-width:100%;border-radius:10px"><div>${esc(p.note || '')}</div></div>`).join('');
+  const photos = (s.photos || []).filter(p => safeImg(p.data));
+  if (photos.length) h += '<h2>صور موثّقة</h2>' + photos.map(p => `<div class="card"><img src="${safeImg(p.data)}" style="max-width:100%;border-radius:10px"><div>${esc(p.note || '')}</div></div>`).join('');
   h += `<p class="dim">مستويات الثقة: «موثوق» = قراءة حية أو معيار OBD، «أفضل جهد» = مكتبة مرجعية/بروتوكول المصنّع، «تقديري» = ترجيح ذكي يحتاج تأكيد. مسح الأعطال لا يصلحها.</p></div></body></html>`;
   return h;
 }

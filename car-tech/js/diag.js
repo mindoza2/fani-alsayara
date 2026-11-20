@@ -178,7 +178,7 @@ export function circuitFor(code) {
   if (n >= 110 && n <= 114) return 'iat';
   if ((n >= 115 && n <= 119) || n === 125 || n === 128) return 'ect';
   if ((n >= 120 && n <= 124) || (n >= 220 && n <= 224) || n === 2135) return 'tps';
-  if ((n >= 130 && n <= 167) || (n >= 30 && n <= 64)) return 'o2';
+  if ((n >= 130 && n <= 167) || (n >= 30 && n <= 44) || (n >= 50 && n <= 64)) return 'o2'; // P0045–P0049 are turbo boost, not O2
   if (n >= 170 && n <= 175) return 'lean';
   if (n >= 201 && n <= 212) return 'injector';
   if (n >= 300 && n <= 312) return 'coil';
@@ -249,12 +249,28 @@ export const CIRCUITS = {
     wires: [W(0, 'air', 'هواء مقاس', 'MAF يزيد مع الدوران', '', { a: 'maf', b: 'tb', pid: 0x10 }), W(1, 'air', 'هواء', '', '', { a: 'tb', b: 'im', pid: 0x11 }), W(2, 'air', 'هواء + وقود → عادم', '', '', { a: 'im', b: 'o2' }), W(3, 'sig', 'قراءة الأكسجين', 'تتذبذب', '', { a: 'o2', b: 'ecm', pid: 0x14 }), W(4, 'ctrl', 'تعديل كمية الوقود', 'التعديل الكلي ±10%', '', { a: 'ecm', b: 'inj', pid: 0x07 }), W(5, 'fuel', 'وقود', '', '', { a: 'inj', b: 'im' })], notes: ['الخلطة الفقيرة على الخمول التي تتحسن على الدوران العالي = تسريب هواء غالبًا'] }),
 };
 let USER_CIRCUITS = {};
-export function addLibraryCircuits(obj) { USER_CIRCUITS = { ...USER_CIRCUITS, ...(obj || {}) }; }
+// Circuits from imported library files: only well-formed ones, with numbers forced to numbers and
+// text forced to text (a file must not be able to break the page or inject markup into the drawing).
+const num = (v, d = 0) => (v !== '' && v != null && Number.isFinite(+v) ? +v : d);
+const str = v => (v == null ? undefined : String(v));
+function cleanCircuit(c) {
+  if (!c || typeof c !== 'object' || !Array.isArray(c.comps) || !Array.isArray(c.wires) || !c.comps.length) return null;
+  const comps = c.comps.filter(x => x && x.id != null).map(x => ({ id: String(x.id), label: String(x.label ?? x.id), kind: String(x.kind || 'part'), x: num(x.x), y: num(x.y), w: num(x.w, 150), h: num(x.h, 60) }));
+  const wires = c.wires.filter(w => w && typeof w === 'object').map((w, i) => ({
+    i: num(w.i, i), role: String(w.role || 'sig'), label: String(w.label || ''), expect: String(w.expect ?? ''), measure: String(w.measure ?? ''),
+    conf: ['sure', 'best', 'est'].includes(w.conf) ? w.conf : 'best', pid: w.pid != null && Number.isFinite(+w.pid) ? +w.pid : undefined,
+    a: str(w.a), b: str(w.b), pin: str(w.pin), vlive: !!w.vlive,
+  }));
+  return { title: String(c.title || 'مخطط من المكتبة'), comps, wires, notes: Array.isArray(c.notes) ? c.notes.map(String) : [] };
+}
+// Called with the circuits of all libraries currently installed (replaces the previous set, so a
+// deleted library's circuits disappear immediately).
+export function addLibraryCircuits(obj) { const o = {}; for (const [k, v] of Object.entries(obj || {})) { const c = cleanCircuit(v); if (c) o[k] = c; } USER_CIRCUITS = o; }
 export function getCircuit(id) {
   if (USER_CIRCUITS[id]) return { ...USER_CIRCUITS[id], fromLibrary: true };
   return CIRCUITS[id] ? CIRCUITS[id]() : null;
 }
-export const CIRCUIT_LIST = () => [...Object.keys(CIRCUITS), ...Object.keys(USER_CIRCUITS)];
+export const CIRCUIT_LIST = () => [...new Set([...Object.keys(CIRCUITS), ...Object.keys(USER_CIRCUITS)])];
 
 // Evaluate live readings on a circuit: where does the chain break? (estimated)
 export function chainCheck(id, live, volt) {
@@ -268,10 +284,10 @@ export function chainCheck(id, live, volt) {
   if (id === 'iat' && v(0x0f) != null) r.push(v(0x0f) <= -39 ? { wire: 0, st: 'bad', t: 'دائرة مفتوحة (−40°C)' } : { wire: 0, st: 'ok', t: `يقرأ ${v(0x0f).toFixed(0)}°C` });
   if (id === 'tps' && v(0x11) != null) r.push(v(0x11) < 1 ? { wire: 1, st: 'bad', t: 'الإشارة صفر: مرجع 5V مقطوع أو الإشارة متماسة مع الأرضي' } : v(0x11) > 98 ? { wire: 1, st: 'bad', t: 'الإشارة قصوى: تماس مع 5V أو أرضي مرجعي مقطوع' } : { wire: 1, st: 'ok', t: `يقرأ ${v(0x11).toFixed(0)}%` });
   if (id === 'map' && v(0x0b) != null) r.push(v(0x0b) < 5 ? { wire: 1, st: 'bad', t: 'قراءة شبه صفرية: مرجع/إشارة' } : { wire: 1, st: 'ok', t: `يقرأ ${v(0x0b)} kPa` });
-  if (id === 'maf' && v(0x10) != null) r.push(v(0x10) < 0.5 && live.running ? { wire: 1, st: 'bad', t: 'لا إشارة تدفق والمكينة شغالة' } : { wire: 1, st: 'ok', t: `يقرأ ${v(0x10).toFixed(1)} g/s` });
+  if (id === 'maf' && v(0x10) != null) r.push(v(0x10) < 0.5 && live?.running ? { wire: 1, st: 'bad', t: 'لا إشارة تدفق والمكينة شغالة' } : { wire: 1, st: 'ok', t: `يقرأ ${v(0x10).toFixed(1)} g/s` });
   if (id === 'o2' && v(0x14) != null) r.push(Math.abs(v(0x14) - 0.45) < 0.03 ? { wire: 2, st: 'warn', t: 'الفولت ثابت قرب 0.45V: الحساس غير نشط (بارد أو سخّان معطّل)' } : { wire: 2, st: 'ok', t: `يقرأ ${v(0x14).toFixed(2)}V` });
   if (id === 'charging' && (volt || v(0x42))) {
-    if (volt) r.push({ wire: 0, st: live.running ? (volt >= 13.5 && volt <= 14.8 ? 'ok' : 'bad') : volt >= 12.4 ? 'ok' : 'warn', t: `فولت القطعة (البطارية) ${volt.toFixed(2)}V` });
+    if (volt) r.push({ wire: 0, st: live?.running ? (volt >= 13.5 && volt <= 14.8 ? 'ok' : 'bad') : volt >= 12.4 ? 'ok' : 'warn', t: `فولت القطعة (البطارية) ${volt.toFixed(2)}V` });
     if (volt && v(0x42)) { const d = Math.abs(volt - v(0x42)); r.push({ wire: 2, st: d > 0.5 ? 'warn' : 'ok', t: `فرق بين فولت البطارية وفولت الكمبيوتر ${d.toFixed(2)}V${d > 0.5 ? ' — هبوط جهد في التغذية/الأرضي' : ''}` }); }
   }
   if (id === 'lean' && v(0x07) != null) r.push({ wire: 4, st: Math.abs(v(0x07)) > 15 ? 'bad' : Math.abs(v(0x07)) > 8 ? 'warn' : 'ok', t: `تعديل طويل بنك1 ${v(0x07).toFixed(1)}%` });

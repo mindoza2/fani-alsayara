@@ -28,6 +28,13 @@ export function fmtTime(ms) {
   return `${String(m).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
 }
 export const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+// Rejects if the promise has not settled within ms (storage on some phones can stall forever).
+export function withTimeout(p, ms, msg = 'انتهت المهلة') {
+  let t;
+  return Promise.race([p, new Promise((_, rej) => { t = setTimeout(() => rej(new Error(msg)), ms); })]).finally(() => clearTimeout(t));
+}
+// Only image data URLs made by this app's camera/canvas are rendered (imported backups are untrusted).
+export const safeImg = s => (typeof s === 'string' && /^data:image\/(png|jpe?g|webp|gif);base64,[A-Za-z0-9+/=\s]+$/.test(s) ? s : '');
 
 // Confidence levels shown on every piece of information.
 export const CONF = {
@@ -44,7 +51,8 @@ export function conf(level) {
 const listeners = {};
 export const bus = {
   on(ev, fn) { (listeners[ev] ||= new Set()).add(fn); return () => listeners[ev].delete(fn); },
-  emit(ev, data) { (listeners[ev] || []).forEach(fn => { try { fn(data); } catch (e) { console.error(e); } }); },
+  // iterate over a copy: a handler that adds/removes listeners must not affect this round
+  emit(ev, data) { [...(listeners[ev] || [])].forEach(fn => { try { fn(data); } catch (e) { console.error(e); } }); },
 };
 
 export function toast(msg, kind = '') {
@@ -55,12 +63,18 @@ export function toast(msg, kind = '') {
 }
 
 // Modal dialog. buttons: [{label, value, cls}] → resolves with value.
+// Only one dialog at a time: a newer one resolves the older one as cancelled (null) instead of
+// leaving its caller waiting forever.
+let openClose = null;
 export function modal(title, bodyHtml, buttons = [{ label: 'حسنًا', value: true, cls: 'primary' }]) {
+  if (openClose) openClose(null);
   return new Promise(res => {
     const bd = $('#modalBackdrop'), m = $('#modal');
     m.innerHTML = `<h2>${esc(title)}</h2><div class="modal-body">${bodyHtml}</div><div class="btn-row"></div>`;
     const row = m.querySelector('.btn-row');
-    const close = v => { bd.classList.add('hidden'); m.innerHTML = ''; res(v); };
+    const onKey = e => { if (e.key === 'Escape') close(null); };
+    const close = v => { if (openClose !== close) return; openClose = null; document.removeEventListener('keydown', onKey); bd.classList.add('hidden'); m.innerHTML = ''; res(v); };
+    openClose = close; document.addEventListener('keydown', onKey);
     buttons.forEach(b => {
       const el = h(`<button class="btn ${b.cls || ''}">${esc(b.label)}</button>`);
       el.onclick = () => {

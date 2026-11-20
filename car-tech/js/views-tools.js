@@ -1,8 +1,8 @@
 // Phase-2 screens: guided diagnosis, services & bidirectional control, wiring diagrams,
 // AI technician, reports & history, settings.
-import { $, $$, esc, bus, toast, modal, confirmAction, conf, fmtDate, hex2, hex3, hex4, download, shareFile, uid } from './util.js';
-import { app, requireConn, snapshotScan, startLive, stopLive, loadLibrary, finalizeStatuses } from './core.js';
-import { PIDS, pidName } from './obd.js';
+import { $, $$, esc, bus, toast, modal, confirmAction, conf, fmtDate, hex2, hex3, hex4, download, shareFile, uid, safeImg } from './util.js';
+import { app, requireConn, snapshotScan, startLive, stopLive, loadLibrary, exclusive, vehDisplacement } from './core.js';
+import { PIDS, pidName, combineReadiness, readinessStats } from './obd.js';
 import { describeDtc } from './dtcdb.js';
 import { correlate, circuitFor, getCircuit, CIRCUIT_LIST, chainCheck } from './diag.js';
 import { wiringSvg, ROLE } from './widgets.js';
@@ -16,7 +16,7 @@ import { speak, canSpeak, params, go } from './nav.js';
 const connected = () => app.conn.ready;
 function diagCtx() {
   const m6 = app.mode06?.map ? [...app.mode06.map.values()].flat() : [];
-  return { dtcs: app.allDtcs(), live: app.liveValues(), trims: app.trims(), volt: app.conn.voltage, running: app.running(), mode06: m6, displacement: settings().displacement };
+  return { dtcs: app.allDtcs(), live: app.liveValues(), trims: app.trims(), volt: app.conn.voltage, running: app.running(), mode06: m6, displacement: vehDisplacement() };
 }
 
 /* =========================== Guided diagnosis =========================== */
@@ -33,12 +33,15 @@ export function diagView(c) {
           <div><h3>خطوات الفحص ونقاط القياس</h3><ol class="small" style="padding-inline-start:18px">${d.steps.map(s => `<li style="margin-bottom:8px">${esc(s.t)}<div class="dim">📍 القياس: ${esc(s.m)} · ✓ المتوقع: ${esc(s.e)}</div></li>`).join('')}</ol>
           <div class="btn-row">${d.circuit ? `<a class="btn sm" href="#/wiring?c=${d.circuit}${d.codes[0] ? '&code=' + d.codes[0] : ''}">المخطط الكهربائي</a>` : ''}<a class="btn sm" href="#/ai?q=${encodeURIComponent('ساعدني في تشخيص: ' + d.title + ' — الأكواد ' + d.codes.join(' '))}">اسأل الفني</a></div></div></div></div>`).join('')
       : `<div class="card" style="margin-top:14px"><div class="empty"><div class="big">✦</div>${app.lastScan ? 'لا توجد أعطال أو قيم غير طبيعية تستدعي التشخيص.' : 'شغّل الفحص الشامل أولًا ليبدأ التحليل.'}</div></div>`}`;
-    $('#gLive', c)?.addEventListener('click', async e => {
-      e.target.innerHTML = '<span class="spin"></span>';
+    $('#gLive', c)?.addEventListener('click', e => {
+      const b = e.currentTarget; if (b.disabled) return;
       const sup = app.pidSupport.get(app.primaryEcu()) || new Set();
       const pids = [0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0c, 0x10, 0x0b, 0x14, 0x42].filter(p => sup.has(p));
-      startLive({ fast: pids, rateMs: 300 });
-      setTimeout(() => { stopLive(); draw(); toast('أُضيفت قراءات حية للتحليل', 'ok'); }, 12000);
+      if (!pids.length) { toast('الكمبيوتر لم يعلن عن القيم المطلوبة للتحليل — شغّل الفحص الشامل أولًا', 'warn'); return; }
+      b.disabled = true; b.innerHTML = '<span class="spin"></span> 12 ثانية';
+      const tok = startLive({ fast: pids, rateMs: 300 });
+      // stops only its own polling, and only redraws if this page is still the one on screen
+      setTimeout(() => { stopLive(tok); if (c.isConnected) { draw(); toast('أُضيفت قراءات حية للتحليل', 'ok'); } }, 12000);
     });
   };
   draw();
@@ -85,23 +88,24 @@ export function servicesView(c) {
     $('#svMod', c)?.addEventListener('change', ev => { modKey = ev.target.value; draw(); });
     $('#svClr', c)?.addEventListener('click', () => { const std = [...app.ecus.values()].find(x => x.std); if (std) clearOne(std, draw); else toast('لا يوجد كمبيوتر قياسي يرد', 'warn'); });
     $('#sv8', c)?.addEventListener('click', mode8);
-    $$('[data-srs]', c).forEach(b => b.onclick = () => clearOne(app.ecus.get(b.dataset.srs), draw));
+    $$('[data-srs]', c).forEach(b => b.onclick = () => { const m = app.ecus.get(b.dataset.srs); if (m) clearOne(m, draw); });
     if (!e) return;
-    $('#svDisc', c).onclick = async ev => { ev.target.innerHTML = '<span class="spin"></span>'; out[modKey] = { ...r, services: await app.mods.discoverServices(e.mod) }; await app.mods.done(); draw(); };
-    $('#svSec', c).onclick = async ev => { ev.target.innerHTML = '<span class="spin"></span>'; out[modKey] = { ...r, sec: await app.mods.security(e.mod) }; await app.mods.done(); draw(); };
+    $('#svDisc', c).onclick = async ev => { const s = await op('اكتشاف خدمات الكمبيوتر', () => app.mods.discoverServices(e.mod), ev.currentTarget); if (s) out[modKey] = { ...(out[modKey] || {}), services: s }; draw(); };
+    $('#svSec', c).onclick = async ev => { const s = await op('فحص حالة الوصول الأمني', () => app.mods.security(e.mod), ev.currentTarget); if (s) out[modKey] = { ...(out[modKey] || {}), sec: s }; draw(); };
     for (const k of ['rt', 'io', 'did']) {
       $(`#sc_${k}`, c).onclick = async ev => {
         const from = parseInt($(`#f_${k}`, c).value, 16), to = parseInt($(`#t_${k}`, c).value, 16);
-        if (!(from >= 0) || !(to >= from) || to - from > 0x0fff) { toast('نطاق غير صالح (حد أقصى 4096 معرّف)', 'warn'); return; }
-        const bar = $(`#p_${k}`, c); bar.classList.remove('hidden');
-        ev.target.textContent = 'إيقاف'; ev.target.onclick = () => { app.mods.cancel = true; };
+        if (!(from >= 0) || !(to >= from) || to > 0xffff || to - from > 0x0fff) { toast('نطاق غير صالح (حد أقصى 4096 معرّف)', 'warn'); return; }
+        if (app.busy) { toast(`انتظر حتى ينتهي: ${app.busy.label}`, 'warn'); return; }
+        const btn = ev.currentTarget, bar = $(`#p_${k}`, c); bar.classList.remove('hidden');
+        btn.textContent = 'إيقاف'; btn.onclick = () => { if (app.mods) app.mods.cancel = true; btn.disabled = true; };
         const fn = { rt: 'scanRoutines', io: 'scanIo', did: 'scanDids' }[k];
-        try {
-          const res = await app.mods[fn](e.mod, from, to, (p, t) => { bar.querySelector('i').style.width = (p * 100).toFixed(0) + '%'; $(`#pt_${k}`, c).textContent = t; });
+        const res = await op('مسح معرّفات الكمبيوتر', step => app.mods[fn](e.mod, from, to, (p, t) => { step(p, t); const i = bar.querySelector('i'); if (i) i.style.width = (p * 100).toFixed(0) + '%'; const pt = $(`#pt_${k}`, c); if (pt) pt.textContent = t; }), null, true);
+        if (res) {
           out[modKey] = { ...(out[modKey] || {}), [k]: [...((out[modKey] || {})[k] || []).filter(x => x.id < from || x.id > to), ...res.found] };
           toast(`${res.found.length} معرّف موجود${res.cancelled ? ' (أُوقف المسح)' : ''}`, 'ok');
-        } catch (er) { toast(er.message, 'err'); }
-        await app.mods.done(); draw();
+        }
+        draw();
       };
     }
     $$('[data-run]', c).forEach(b => b.onclick = () => runRoutine(e, parseInt(b.dataset.run, 16)));
@@ -118,14 +122,28 @@ export function servicesView(c) {
     return h;
   };
   const libName = (kind, id) => (app.lib.routines || []).find(x => x.kind === kind && parseInt(x.id, 16) === id)?.name;
+  // Every request to a module is one exclusive operation (never interleaved with a scan or live
+  // polling), its errors are shown, and the module is always returned to normal addressing.
+  const op = async (label, fn, btn, cancelable = false) => {
+    if (!connected()) { toast('اتصل بالسيارة أولًا', 'warn'); return null; }
+    if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spin"></span>'; }
+    try { return await exclusive(label, async step => { try { return await fn(step); } finally { await app.mods.done(); } }, { cancelable }); }
+    catch (er) { toast(er.message, 'err'); return null; }
+  };
   const preconditions = async () => {
-    let speed = null;
-    try { const r = await app.obd.readPids([0x0d]); speed = [...r.values()][0]?.value ?? null; } catch {}
-    return speed;
+    const r = await exclusive('قراءة السرعة قبل التنفيذ', () => app.obd.readPids([0x0d]));
+    return [...r.values()][0]?.value ?? null;
+  };
+  const ready = () => {
+    if (!connected()) { toast('اتصل بالسيارة أولًا', 'warn'); return false; }
+    if (app.busy) { toast(`انتظر حتى ينتهي: ${app.busy.label}`, 'warn'); return false; }
+    return true;
   };
   const runRoutine = async (e, rid) => {
     const bl = routineBlocked(rid); if (bl) { toast(bl, 'err'); return; }
-    const speed = await preconditions();
+    if (!ready()) return;
+    let speed = null;
+    try { speed = await preconditions(); } catch (er) { toast(er.message, 'err'); return; }
     if (speed > 0) { toast('ممنوع أثناء الحركة — أوقف السيارة', 'err'); return; }
     const name = libName('routine', rid);
     const ok = await confirmAction({
@@ -135,11 +153,14 @@ export function servicesView(c) {
       reversible: null,
     });
     if (!ok) return;
-    const res = await app.mods.startRoutine(e.mod, rid); await app.mods.done();
+    const res = await op(`تشغيل روتين 0x${hex4(rid)}`, () => app.mods.startRoutine(e.mod, rid));
+    if (!res) return;
     modal(res.ok ? 'الكمبيوتر قبل الأمر' : 'الكمبيوتر رفض الأمر', res.ok ? `<div class="ok-box">ردّ الكمبيوتر بقبول تشغيل الروتين.</div><dl class="kv"><dt>بيانات الرد</dt><dd class="mono">${esc(res.data || '—')}</dd><dt>النتيجة</dt><dd class="mono">${esc(res.result || 'لم يُرسل نتيجة')}</dd></dl><div class="small dim">قبول الأمر لا يعني بالضرورة اكتمال العملية؛ تحقق من النتيجة على السيارة.</div>` : `<div class="warn">${esc(res.error)}</div>`);
   };
   const runIo = async (e, did) => {
-    const speed = await preconditions();
+    if (!ready()) return;
+    let speed = null;
+    try { speed = await preconditions(); } catch (er) { toast(er.message, 'err'); return; }
     if (speed > 0) { toast('ممنوع أثناء الحركة', 'err'); return; }
     const st = await modal(`اختبار فعّال 0x${hex4(did)}`, `<p>${esc(libName('io', did) || 'اختبار غير موثّق — لا نعرف القطعة التي سيشغّلها.')}</p><label class="f">قيمة التحكم (hex) — تعتمد على الكمبيوتر</label><input type="text" class="mono" id="ioV" value="01"><label class="f">المدة بالثواني (يُعاد التحكم للكمبيوتر تلقائيًا بعدها)</label><input type="number" id="ioS" value="3" min="1" max="10">
       <ul class="small"><li>السرعة: ${speed == null ? 'غير معروفة — تأكد أن السيارة متوقفة' : speed + ' كم/س ✓'}</li><li>ابتعد عن الأجزاء المتحركة.</li></ul>`, [{ label: 'إلغاء', value: null, cls: 'ghost' }, { label: 'متابعة', cls: 'primary', value: m => ({ v: m.querySelector('#ioV').value.replace(/\s/g, ''), s: Math.min(10, Math.max(1, +m.querySelector('#ioS').value || 3)) }) }]);
@@ -147,29 +168,34 @@ export function servicesView(c) {
     const ok = await confirmAction({ title: 'تأكيد التشغيل المباشر', what: `سيأخذ البرنامج التحكم بالمعرّف 0x${hex4(did)} لمدة ${st.s} ثانية ثم يعيده للكمبيوتر.`, reversible: 'يُعاد التحكم للكمبيوتر تلقائيًا بعد المدة، وإن انقطع الاتصال يستعيده الكمبيوتر عند انتهاء الجلسة', danger: true, typeWord: 'نفّذ' });
     if (!ok) return;
     toast('جارٍ التنفيذ…');
-    const res = await app.mods.ioControl(e.mod, did, st.v.toUpperCase(), st.s); await app.mods.done();
+    const res = await op(`اختبار فعّال 0x${hex4(did)}`, () => app.mods.ioControl(e.mod, did, st.v.toUpperCase(), st.s));
+    if (!res) return;
     modal(res.ok ? 'نُفّذ الاختبار' : 'رفض الكمبيوتر', res.ok ? `<div class="ok-box">قبل الكمبيوتر الأمر. ${res.returned ? 'وأُعيد التحكم له بنجاح.' : '<b>تنبيه:</b> لم يؤكّد الكمبيوتر إعادة التحكم؛ سيستعيده عند انتهاء الجلسة أو أطفئ السويتش.'}</div>` : `<div class="warn">${esc(res.error)}</div>`);
   };
   const runLib = async (e, x) => {
     if (x.kind === 'routine') return runRoutine(e, parseInt(x.id, 16));
     if (x.kind === 'io') return runIo(e, parseInt(x.id, 16));
     if (x.kind === 'write') {
+      if (!/^([0-9a-f]{2})+$/i.test(String(x.data || '')) || !/^[0-9a-f]{1,4}$/i.test(String(x.id || ''))) { toast('بيانات هذا البند في المكتبة غير صالحة (المعرّف/القيمة يجب أن تكون hex)', 'err'); return; }
+      if (!ready()) return;
       const ok = await confirmAction({ title: x.name, what: `كتابة القيمة <span class="mono">${esc(x.data)}</span> في المعرّف ${esc(x.id)}. ${esc(x.warn || '')}`, reversible: x.reversible ?? null, danger: true, typeWord: 'نفّذ' });
       if (!ok) return;
-      const r = await app.mods.writeDid(e.mod, parseInt(x.id, 16), x.data); await app.mods.done();
-      toast(r.ok ? 'قبل الكمبيوتر الكتابة' : 'رفض: ' + r.error, r.ok ? 'ok' : 'err');
+      const r = await op('كتابة بيانات في الكمبيوتر', () => app.mods.writeDid(e.mod, parseInt(x.id, 16), String(x.data).toUpperCase()));
+      if (r) toast(r.ok ? 'قبل الكمبيوتر الكتابة' : 'رفض: ' + r.error, r.ok ? 'ok' : 'err');
     }
   };
   const mode8 = async () => {
     const o = $('#sv8Out', c); o.innerHTML = '<span class="spin"></span>';
-    const r = await app.obd.mode08Supported();
+    const r = await op('اكتشاف اختبارات Mode 08', () => app.obd.mode08Supported());
+    if (!r) { o.innerHTML = ''; return; }
     const items = [...r.entries()].flatMap(([ecu, s]) => [...s].filter(x => x % 0x20).map(t => ({ ecu, t })));
     o.innerHTML = items.length ? items.map(x => `<div class="row small" style="margin:4px 0"><span style="flex:1">TID 0x${hex2(x.t)} — ${x.t === 1 ? 'اختبار تسريب EVAP (يغلق صمام التهوية ليختبر الإحكام)' : 'اختبار غير مسمّى في المعيار'}</span><button class="btn sm" data-t8="${x.t}">تشغيل…</button></div>`).join('') : '<div class="small dim">الكمبيوتر لا يعلن عن اختبارات Mode 08.</div>';
     $$('[data-t8]', o).forEach(b => b.onclick = async () => {
       const t = +b.dataset.t8;
       const ok = await confirmAction({ title: `تشغيل اختبار Mode 08 (0x${hex2(t)})`, what: t === 1 ? 'اختبار تسريب EVAP: الكمبيوتر يغلق نظام البخار. الشروط عادة: المكينة شغالة على الخمول، الوقود بين ربع وثلاثة أرباع الخزان، والسيارة واقفة.' : 'اختبار غير مسمّى.', reversible: 'ينتهي الاختبار وحده ويعود النظام لوضعه الطبيعي', typeWord: null });
       if (!ok) return;
-      const res = await app.obd.runMode08(t);
+      const res = await op(`اختبار Mode 08 (0x${hex2(t)})`, () => app.obd.runMode08(t));
+      if (!res) return;
       const m = res.msgs[0];
       toast(m && !m.neg ? 'قبل الكمبيوتر بدء الاختبار — النتيجة تظهر في Mode 6 / الأعطال لاحقًا' : 'رفض: ' + (m?.neg ? nrcText(m.nrc) : res.error), m && !m.neg ? 'ok' : 'err');
     });
@@ -258,21 +284,27 @@ export function aiView(c) {
     $$('[data-q]', c).forEach(b => b.onclick = () => send(b.dataset.q));
     $$('[data-say]', c).forEach(a => a.onclick = ev => { ev.preventDefault(); const m = hist.find(x => x.id === a.dataset.say); if (m) speak(m.a); });
   };
+  let sending = false;
   const send = async q => {
-    q = (q || '').trim(); if (!q) return;
+    q = (q || '').trim(); if (!q || sending) return;
+    sending = true;
     const ch = $('#aChat', c);
     ch.insertAdjacentHTML('beforeend', `<div class="msg me">${esc(q)}</div><div class="msg bot" id="aWait"><span class="spin"></span></div>`); ch.scrollTop = 1e9;
     $('#aQ', c).value = '';
-    let a, src = 'local';
-    const av = aiAvailable();
-    if (av.ready) {
-      try { a = await askClaude(q, buildContext(app), hist.filter(h => h.src === 'claude')); src = 'claude'; }
-      catch (e) { toast('Claude: ' + e.message + ' — تم استخدام الوضع المحلي', 'warn'); }
-    }
-    if (!a) a = await localAnswer(q, app);
-    const ent = await saveAnswer(q, a, src, app);
-    hist.push({ id: ent.id, q, a, src });
-    draw();
+    try {
+      let a, src = 'local';
+      const av = aiAvailable();
+      if (av.ready) {
+        try { a = await askClaude(q, buildContext(app), hist.filter(h => h.src === 'claude')); src = 'claude'; }
+        catch (e) { toast('Claude: ' + e.message + ' — تم استخدام الوضع المحلي', 'warn'); }
+      }
+      if (!a) a = await localAnswer(q, app);
+      let id = uid();
+      try { id = (await saveAnswer(q, a, src, app)).id; } catch (e) { toast('تعذّر حفظ الإجابة في المكتبة المحلية', 'warn'); }
+      hist.push({ id, q, a, src });
+    } catch (e) { toast(e.message, 'err'); }
+    finally { sending = false; }
+    draw(); // if the person already left this page, this draws into a detached container (harmless)
   };
   draw().then(() => { const q = params().q; if (q) { history.replaceState(null, '', '#/ai'); send(q); } });
 }
@@ -287,21 +319,24 @@ export async function reportsView(c) {
       <label class="chk small"><input type="checkbox" id="rPh" ${photos.length ? 'checked' : ''}> إرفاق الصور الموثّقة (${photos.length})</label>
       <div class="btn-row"><button class="btn primary" id="rNow" ${app.ecus.size ? '' : 'disabled'}>إنشاء ومشاركة</button><button class="btn" id="rDl" ${app.ecus.size ? '' : 'disabled'}>تنزيل</button></div>${app.ecus.size ? '' : '<div class="small dim">اتصل وافحص أولًا، أو اختر فحصًا محفوظًا من السجل.</div>'}</div>
       <div class="card"><h2>مقارنة الحالة عبر الزمن</h2><p class="small muted">اختر فحصين من السجل لمقارنة الأعطال الجديدة والمحلولة والمستمرة.</p><button class="btn" id="rCmp" ${pick.length === 2 ? '' : 'disabled'}>مقارنة المحدّدين (${pick.length}/2)</button><div id="rCmpOut"></div></div>
-      <div class="card spanall"><h2>سجل الفحوصات (محفوظ على هذا الجهاز)</h2>${scans.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th></th><th>التاريخ</th><th>السيارة</th><th>الأعطال</th><th>الكمبيوترات</th><th></th></tr></thead><tbody>${scans.map(s => `<tr><td><input type="checkbox" data-pick="${s.id}" ${pick.includes(s.id) ? 'checked' : ''}></td><td>${fmtDate(s.t)}${s.demo ? ' <span class="badge vi">تجريبي</span>' : ''}</td><td>${esc([s.vehicle?.make, s.vehicle?.year].filter(Boolean).join(' ') || '—')} <span class="mono small dim">${esc(s.vehicle?.vin || '')}</span></td><td>${s.dtcs.length ? `<span class="badge err">${s.dtcs.length}</span> <span class="small mono">${esc(s.dtcs.map(d => d.code).slice(0, 6).join(' '))}</span>` : '<span class="badge ok">0</span>'}</td><td class="num">${s.ecus.length}</td><td><button class="btn sm" data-rep="${s.id}">تقرير</button> <button class="btn sm ghost" data-del="${s.id}">حذف</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">لا توجد فحوصات محفوظة بعد. كل «فحص شامل» يُحفظ هنا تلقائيًا.</div>'}
+      <div class="card spanall"><h2>سجل الفحوصات (محفوظ على هذا الجهاز)</h2>${scans.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th></th><th>التاريخ</th><th>السيارة</th><th>الأعطال</th><th>الكمبيوترات</th><th></th></tr></thead><tbody>${scans.map(s => `<tr><td><input type="checkbox" data-pick="${esc(s.id)}" ${pick.includes(s.id) ? 'checked' : ''}></td><td>${fmtDate(s.t)}${s.demo ? ' <span class="badge vi">تجريبي</span>' : ''}</td><td>${esc([s.vehicle?.make, s.vehicle?.year].filter(Boolean).join(' ') || '—')} <span class="mono small dim">${esc(s.vehicle?.vin || '')}</span></td><td>${s.dtcs?.length ? `<span class="badge err">${s.dtcs.length}</span> <span class="small mono">${esc(s.dtcs.map(d => d.code).slice(0, 6).join(' '))}</span>` : '<span class="badge ok">0</span>'}</td><td class="num">${s.ecus?.length || 0}</td><td><button class="btn sm" data-rep="${esc(s.id)}">تقرير</button> <button class="btn sm ghost" data-del="${esc(s.id)}">حذف</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">لا توجد فحوصات محفوظة بعد. كل «فحص شامل» يُحفظ هنا تلقائيًا.</div>'}
       ${store.persistent ? '' : '<div class="warn" style="margin-top:8px">المتصفح يمنع التخزين الدائم (ربما وضع التصفح الخاص): السجل محفوظ لهذه الجلسة فقط.</div>'}
       <div class="small dim" style="margin-top:8px">المرحلة الأولى: التخزين محلي لكل جهاز. المزامنة بين الأجهزة غير متوفرة بعد — يمكنك نقل البيانات بتصدير نسخة احتياطية من الإعدادات.</div></div></div>`;
-    const make = async (rec) => { if ($('#rPh', c)?.checked) rec = { ...rec, photos: photos.filter(p => !rec.vehicle?.vin || !p.vin || p.vin === rec.vehicle.vin) }; return scanReportHtml(rec, correlate({ dtcs: rec.dtcs, live: rec.live || {}, trims: null, volt: rec.voltage })); };
+    const make = async (rec) => { if ($('#rPh', c)?.checked) rec = { ...rec, photos: photos.filter(p => safeImg(p.data) && (!rec.vehicle?.vin || !p.vin || p.vin === rec.vehicle.vin)) }; return scanReportHtml(rec, correlate({ dtcs: rec.dtcs || [], live: rec.live || {}, trims: null, volt: rec.voltage })); };
     const cur = () => app.lastScan && app.lastScan.ecus ? { ...snapshotScan(), t: app.lastScan.t } : snapshotScan();
     $('#rNow', c).onclick = async () => shareFile(`car-report-${new Date().toISOString().slice(0, 10)}.html`, await make(cur()));
     $('#rDl', c).onclick = async () => download(`car-report-${new Date().toISOString().slice(0, 10)}.html`, await make(cur()));
-    $$('[data-rep]', c).forEach(b => b.onclick = async () => { const s = await store.get('scans', b.dataset.rep); shareFile(`car-report-${new Date(s.t).toISOString().slice(0, 10)}.html`, await make(s)); });
-    $$('[data-del]', c).forEach(b => b.onclick = async () => { if (await confirmAction({ title: 'حذف فحص', what: 'حذف هذا الفحص من السجل المحلي.', reversible: false })) { await store.del('scans', b.dataset.del); draw(); } });
+    $$('[data-rep]', c).forEach(b => b.onclick = async () => { const s = await store.get('scans', b.dataset.rep); if (!s) { toast('هذا الفحص لم يعد موجودًا', 'warn'); draw(); return; } shareFile(`car-report-${new Date(s.t).toISOString().slice(0, 10)}.html`, await make(s)); });
+    $$('[data-del]', c).forEach(b => b.onclick = async () => { if (await confirmAction({ title: 'حذف فحص', what: 'حذف هذا الفحص من السجل المحلي.', reversible: false })) { await store.del('scans', b.dataset.del); pick = pick.filter(x => x !== b.dataset.del); draw(); } });
     $$('[data-pick]', c).forEach(b => b.onchange = () => { pick = b.checked ? [...pick, b.dataset.pick].slice(-2) : pick.filter(x => x !== b.dataset.pick); draw(); });
     $('#rCmp', c).onclick = async () => {
-      const [a, b] = (await Promise.all(pick.map(id => store.get('scans', id)))).sort((x, y) => x.t - y.t);
-      const A = new Set(a.dtcs.map(d => d.code)), B = new Set(b.dtcs.map(d => d.code));
+      const got = (await Promise.all(pick.map(id => store.get('scans', id)))).filter(Boolean);
+      if (got.length < 2) { pick = got.map(s => s.id); toast('أحد الفحصين المحدّدين لم يعد موجودًا', 'warn'); draw(); return; }
+      const [a, b] = got.sort((x, y) => x.t - y.t);
+      const A = new Set((a.dtcs || []).map(d => d.code)), B = new Set((b.dtcs || []).map(d => d.code));
       const nw = [...B].filter(x => !A.has(x)), gone = [...A].filter(x => !B.has(x)), same = [...B].filter(x => A.has(x));
-      const rdy = s => { const r = s.readiness?.[0]; if (!r) return '—'; const sup = r.mons.filter(m => m.sup); return `${sup.filter(m => m.ready).length}/${sup.length}`; };
+      // all emission computers together, same rule as everywhere else in the app
+      const rdy = s => { const st = readinessStats(combineReadiness((s.readiness || []).map(r => [r.ecu, r]))); return st ? `${st.ready}/${st.total}` : '—'; };
       $('#rCmpOut', c).innerHTML = `<div class="small" style="margin-top:10px">${fmtDate(a.t)} ← ${fmtDate(b.t)}</div><dl class="kv" style="margin-top:8px">
         <dt>أعطال جديدة</dt><dd>${nw.length ? nw.map(x => `<span class="badge err mono">${x}</span>`).join(' ') : '—'}</dd>
         <dt>أعطال اختفت</dt><dd>${gone.length ? gone.map(x => `<span class="badge ok mono">${x}</span>`).join(' ') : '—'}</dd>
@@ -361,13 +396,34 @@ export function settingsView(c) {
     $('#bSave', c).onclick = () => { saveSettings({ extraUuids: $('#bU', c).value.split(/[,\s]+/).map(x => x.trim()).filter(Boolean) }); toast('سيُستخدم في الاتصال القادم', 'ok'); };
     $('#lImp', c).onchange = async e => {
       const f = e.target.files[0]; if (!f) return;
-      try { const data = JSON.parse(await f.text()); await store.put('library', { id: uid(), t: Date.now(), name: data.name || f.name, data }); await loadLibrary(); toast('أُضيفت المكتبة', 'ok'); draw(); }
-      catch (er) { toast('ملف غير صالح: ' + er.message, 'err'); }
+      try {
+        const data = JSON.parse(await f.text());
+        if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('المحتوى ليس كائن JSON');
+        if (![data.modules, data.routines, data.codes, data.circuits].some(Boolean)) throw new Error('لا يحتوي modules أو routines أو codes أو circuits');
+        await store.put('library', { id: uid(), t: Date.now(), name: String(data.name || f.name), data }); await loadLibrary(); toast('أُضيفت المكتبة', 'ok'); draw();
+      } catch (er) { toast('ملف غير صالح: ' + er.message, 'err'); }
+      e.target.value = '';
     };
     $('#lTpl', c).onclick = () => download('car-tech-library-template.json', JSON.stringify(LIB_TEMPLATE, null, 2), 'application/json');
     $$('[data-ldel]', c).forEach(b => b.onclick = async () => { await store.del('library', b.dataset.ldel); await loadLibrary(); draw(); });
     $('#dExp', c).onclick = async () => { const o = { v: 1, t: Date.now(), settings: { ...settings(), apiKey: '' } }; for (const s2 of ['scans', 'trips', 'ai', 'photos', 'vehicles', 'library']) o[s2] = await store.all(s2); download(`car-tech-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(o), 'application/json'); toast('صُدّرت النسخة (بدون مفتاح API)', 'ok'); };
-    $('#dImp', c).onchange = async e => { const f = e.target.files[0]; if (!f) return; try { const o = JSON.parse(await f.text()); let n = 0; for (const s2 of ['scans', 'trips', 'ai', 'photos', 'vehicles', 'library']) for (const r of o[s2] || []) { await store.put(s2, r); n++; } await loadLibrary(); toast(`استُوردت ${n} سجل`, 'ok'); } catch (er) { toast('ملف غير صالح', 'err'); } };
+    $('#dImp', c).onchange = async e => {
+      const f = e.target.files[0]; if (!f) return;
+      try {
+        const o = JSON.parse(await f.text());
+        if (!o || typeof o !== 'object') throw new Error('bad');
+        let n = 0, skipped = 0;
+        for (const s2 of ['scans', 'trips', 'ai', 'photos', 'vehicles', 'library']) {
+          for (const r of Array.isArray(o[s2]) ? o[s2] : []) {
+            if (!r || typeof r !== 'object' || typeof r.id !== 'string' || !r.id) { skipped++; continue; }
+            if (s2 === 'photos' && !safeImg(r.data)) { skipped++; continue; }
+            await store.put(s2, r); n++;
+          }
+        }
+        await loadLibrary(); toast(`استُوردت ${n} سجل${skipped ? ` (تُجوهل ${skipped} غير صالح)` : ''}`, 'ok');
+      } catch (er) { toast('ملف غير صالح', 'err'); }
+      e.target.value = '';
+    };
     $('#dClr', c).onclick = async () => { if (!(await confirmAction({ title: 'حذف كل البيانات', what: 'حذف الفحوصات والمشاوير والصور والإجابات والمكتبات المحفوظة على هذا الجهاز.', reversible: false, danger: true, typeWord: 'احذف' }))) return; for (const s2 of ['scans', 'trips', 'ai', 'photos', 'vehicles', 'library']) await store.clear(s2); await loadLibrary(); toast('حُذفت البيانات', 'ok'); draw(); };
   };
   draw();

@@ -32,6 +32,31 @@ export function routineBlocked(rid) {
 }
 export function nrcText(n) { return NRC[n] || `رمز رفض 0x${hex2(n)}`; }
 
+// Raw commands typed in the terminal: refuse what this app must never send, ask before anything
+// that changes the car, and flag adapter settings the app restores before its next request.
+const TERM_DANGER = {
+  0x04: 'مسح أعطال الانبعاثات ولقطة الحظة وتصفير الجاهزية', 0x08: 'تشغيل اختبار تحكّم في السيارة', 0x10: 'تغيير جلسة التشخيص في الكمبيوتر',
+  0x11: 'إعادة تشغيل كمبيوتر', 0x14: 'مسح أعطال', 0x27: 'طلب وصول أمني', 0x28: 'إيقاف/تشغيل اتصال الكمبيوترات ببعضها',
+  0x2e: 'كتابة بيانات في الكمبيوتر (تهيئة/ترميز)', 0x2f: 'تشغيل قطعة مباشرة', 0x31: 'تشغيل روتين في الكمبيوتر', 0x3b: 'كتابة بيانات (KWP/GMLAN)',
+  0x85: 'إيقاف/تشغيل تسجيل الأعطال', 0xae: 'التحكم بجهاز (GMLAN)',
+};
+export function terminalCheck(cmd) {
+  if (cmd.startsWith('AT')) {
+    const a = cmd.slice(2);
+    if (/^(MA$|MR|MT|PP(?!S$)|BR[DT]|LP$|SD)/.test(a)) return { block: 'هذا الأمر يغيّر إعدادات القطعة الدائمة أو يوقفها عن الرد (مراقبة مستمرة / سرعة الاتصال / وضع النوم) — غير مسموح من هنا' };
+    return { dirty: !/^(I|@1|@2|RV|DP|DPN|CS|BD|PPS|IGN|RD)$/.test(a) };
+  }
+  if (cmd.startsWith('ST')) {
+    if (/^ST(S?BR|SL)/.test(cmd)) return { block: 'أوامر سرعة الاتصال والنوم لشريحة STN غير مسموحة من هنا' };
+    return { dirty: !/^ST(DI|I)$/.test(cmd) };
+  }
+  if (!/^([0-9A-F]{2})+$/.test(cmd)) return {};
+  const b = cmd.match(/../g).map(x => parseInt(x, 16)), sid = b[0];
+  if ([0x34, 0x35, 0x36, 0x37, 0x3d, 0xa5].includes(sid) || (sid === 0x10 && b[1] === 0x02)) return { block: 'أوامر البرمجة وكتابة الذاكرة خارج نطاق هذا البرنامج — محظورة' };
+  if (sid === 0x31 && b.length >= 4) { const bl = routineBlocked((b[2] << 8) | b[3]); if (bl) return { block: bl }; }
+  return TERM_DANGER[sid] ? { danger: TERM_DANGER[sid] } : {};
+}
+
 export class ModuleLayer {
   constructor(elm) { this.elm = elm; this.cancel = false; }
 
@@ -47,6 +72,7 @@ export class ModuleLayer {
     this.cancel = false;
     const total = ranges.reduce((s, r) => s + (r.to - r.from + 1), 0);
     let done = 0; const found = [];
+    elm._auto = false; // receive filters below replace automatic receive until reset
     await elm.at('ST19'); // ~100ms timeout per probe
     for (const r of ranges) {
       await this._rangeFilter(r.from + r.off, r.to + r.off);
@@ -219,12 +245,13 @@ export class ModuleLayer {
 }
 export function ascii(b) { const s = b.filter(x => x >= 0x20 && x < 0x7f).map(x => String.fromCharCode(x)).join('').trim(); return s.length >= Math.min(3, b.length) ? s : ''; }
 
-// Module naming: reference library (user-extensible) → else address-only. Returns {name, conf, src}
+// Module naming: reference library (user-extensible) → the name the module reports about itself →
+// the usual meaning of its OBD address → address only. Returns {name, conf, src}
 export function moduleName(mod, lib, make) {
   const hint = (lib?.modules || []).find(x => (!x.make || x.make === make) && parseInt(x.req, 16) === mod.req);
   if (hint) return { name: hint.name, conf: hint.conf || 'best', src: 'المكتبة المرجعية' };
-  if (mod.req >= 0x7e0 && mod.req <= 0x7e7) return { name: ['كمبيوتر المكينة (ECM)', 'كمبيوتر القير (TCM)'][mod.req - 0x7e0] || `كمبيوتر OBD #${mod.req - 0x7e0 + 1}`, conf: mod.req <= 0x7e1 ? 'best' : 'est', src: 'عنونة ISO 15765-4' };
   const sys = mod.ident?.[0xf197] || mod.ident?.['1A97'];
   if (sys) return { name: sys, conf: 'sure', src: 'اسم النظام كما أرسله الكمبيوتر' };
+  if (mod.req >= 0x7e0 && mod.req <= 0x7e7) return { name: ['كمبيوتر المكينة (ECM)', 'كمبيوتر القير (TCM)'][mod.req - 0x7e0] || `كمبيوتر OBD #${mod.req - 0x7e0 + 1}`, conf: mod.req <= 0x7e1 ? 'best' : 'est', src: 'العنوان المعتاد في ISO 15765-4' };
   return { name: `كمبيوتر على العنوان 0x${hex3(mod.req)}`, conf: 'est', src: 'الاسم غير معروف — أضفه للمكتبة المرجعية' };
 }

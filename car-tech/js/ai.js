@@ -33,21 +33,31 @@ export function buildContext(app) {
 export async function askClaude(q, ctx, history = []) {
   const s = settings();
   const messages = [...history.slice(-6).flatMap(h => [{ role: 'user', content: h.q }, { role: 'assistant', content: h.a }]), { role: 'user', content: `بيانات السيارة الحالية:\n${ctx}\n\nالسؤال: ${q}` }];
-  const r = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-api-key': s.apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-    body: JSON.stringify({ model: s.model, max_tokens: 1600, system: SYSTEM, messages }),
-  });
-  if (!r.ok) {
-    let msg = `HTTP ${r.status}`;
-    try { const j = await r.json(); msg = j.error?.message || msg; } catch {}
-    if (r.status === 401) msg = 'مفتاح API غير صحيح أو موقوف';
-    if (r.status === 429) msg = 'تجاوزت حد الاستخدام مؤقتًا';
-    if (r.status === 400 && /credit|balance/i.test(msg)) msg = 'رصيد حساب API غير كافٍ';
-    throw new Error(msg);
-  }
-  const j = await r.json();
-  return (j.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n').trim();
+  // a weak mobile connection must not leave the question waiting forever
+  const ctl = new AbortController(); const timer = setTimeout(() => ctl.abort(), 90000);
+  try {
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST', signal: ctl.signal,
+      headers: { 'content-type': 'application/json', 'x-api-key': s.apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+      body: JSON.stringify({ model: s.model, max_tokens: 1600, system: SYSTEM, messages }),
+    });
+    if (!r.ok) {
+      let msg = `HTTP ${r.status}`;
+      try { const j = await r.json(); msg = j.error?.message || msg; } catch {}
+      if (r.status === 401) msg = 'مفتاح API غير صحيح أو موقوف';
+      if (r.status === 429) msg = 'تجاوزت حد الاستخدام مؤقتًا';
+      if (r.status === 400 && /credit|balance/i.test(msg)) msg = 'رصيد حساب API غير كافٍ';
+      throw new Error(msg);
+    }
+    const j = await r.json();
+    const text = (j.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n').trim();
+    if (!text) throw new Error('وصل رد فارغ من Claude');
+    return text;
+  } catch (e) {
+    if (e.name === 'AbortError') throw new Error('لم يصل رد من Claude خلال 90 ثانية');
+    if (e instanceof TypeError) throw new Error('تعذّر الوصول إلى خادم Claude (الإنترنت أو الشبكة)');
+    throw e;
+  } finally { clearTimeout(timer); }
 }
 const norm = s => s.replace(/[إأآ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي').replace(/[^\p{L}\p{N}\s]/gu, ' ').toLowerCase();
 const toks = s => new Set(norm(s).split(/\s+/).filter(w => w.length > 2));

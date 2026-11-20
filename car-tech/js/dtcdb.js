@@ -45,9 +45,13 @@ const T = {
   C0110: 'دائرة موتور طرمبة ABS', C0265: 'دائرة ريليه موتور ABS', C0561: 'نظام التحكم بالثبات معطّل',
 };
 
+// Codes from the person's imported reference libraries (kept apart from the SAE table so they are
+// labelled honestly and disappear when their library is deleted).
+let LIB = {};
 // Generic family descriptions derived from SAE J2012 structure
 export function describeDtc(code) {
   code = String(code).toUpperCase();
+  if (LIB[code]) return { text: LIB[code], conf: 'best', src: 'المكتبة المرجعية' };
   if (T[code]) return { text: T[code], conf: code[1] === '0' || code[1] === '2' ? 'sure' : 'best', src: code[1] === '0' || code[1] === '2' ? 'مكتبة SAE العامة' : 'المكتبة المرجعية' };
   const d = code.slice(1);
   if (code[0] === 'P') {
@@ -79,4 +83,5 @@ export function dtcSeverity(code) {
   if (/^P0[4]/.test(code)) return 'low';
   return 'med';
 }
-export function addLibraryCodes(map) { for (const [k, v] of Object.entries(map || {})) if (/^[PCBU][0-9A-F]{4}$/i.test(k)) T[k.toUpperCase()] = v; }
+// Called with the codes of all libraries currently installed (replaces the previous set).
+export function addLibraryCodes(map) { const o = {}; for (const [k, v] of Object.entries(map || {})) if (/^[PCBU][0-9A-F]{4}$/i.test(k) && v != null) o[k.toUpperCase()] = String(v); LIB = o; }

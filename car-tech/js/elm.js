@@ -37,15 +37,27 @@ export class Elm {
   _log(dir, s) { this.log.push(`${dir} ${s}`); if (this.log.length > 400) this.log.splice(0, 100); bus.emit('elmlog'); }
   // Send one raw command, wait for '>' prompt.
   send(cmd, timeout = 3000) {
-    const run = () => new Promise((res) => {
-      this.buf = '';
-      this.pending = {
-        res: raw => { this._log('←', raw.replace(/\r+/g, ' | ').trim()); res(raw); },
-        timer: setTimeout(() => { const p = this.pending; this.pending = null; this._log('⌛', cmd + ' (مهلة)'); this.stats.errors++; p && res(this.buf + '\nTIMEOUT'); }, timeout),
-      };
-      this._log('→', cmd); this.stats.sent++;
-      this.t.write(cmd + '\r').catch(e => { const p = this.pending; this.pending = null; clearTimeout(p?.timer); res('WRITEFAIL ' + e.message); });
-    });
+    const run = async () => {
+      // after a timeout the adapter may still answer the old command; give that late answer time
+      // to arrive and be discarded so it is never taken as the reply to the next command
+      const quiet = (this._quietUntil || 0) - Date.now();
+      if (quiet > 0) await sleep(quiet);
+      return new Promise((res) => {
+        this.buf = '';
+        const mine = {
+          res: raw => { this._log('←', raw.replace(/\r+/g, ' | ').trim()); res(raw); },
+          timer: setTimeout(() => {
+            if (this.pending === mine) this.pending = null;
+            this._quietUntil = Date.now() + 600;
+            this._log('⌛', cmd + ' (مهلة)'); this.stats.errors++; res(this.buf + '\nTIMEOUT');
+          }, timeout),
+        };
+        this.pending = mine;
+        this._log('→', cmd); this.stats.sent++;
+        // a write that fails late must only finish its own command — never the one queued after it
+        this.t.write(cmd + '\r').catch(e => { if (this.pending !== mine) return; this.pending = null; clearTimeout(mine.timer); res('WRITEFAIL ' + e.message); });
+      });
+    };
     const p = this.queue.then(run, run);
     this.queue = p.catch(() => {});
     return p;
@@ -98,7 +110,7 @@ export class Elm {
     this.is29 = this.proto === 7 || this.proto === 9;
     this.info.protocolName = PROTOCOLS[this.proto] || (ok ? 'غير معروف' : '—');
     if (ok) await this.at('SP' + this.proto.toString(16).toUpperCase()); // lock the found protocol for stability
-    this.curHeader = null;
+    this.curHeader = null; this._auto = false;
     return ok;
   }
   // light re-init after reconnect (protocol already known)
@@ -106,9 +118,20 @@ export class Elm {
     await this.send('ATZ', 4000); await sleep(200);
     for (const c of ['E0', 'E0', 'L0', 'S1', 'H1', 'AT1']) await this.at(c);
     if (this.proto) await this.at('SP' + this.proto.toString(16).toUpperCase());
-    this.curHeader = null;
+    this.curHeader = null; this._auto = false; this._physical = false; this.dirty = false;
     const r = await this.send('0100', 8000);
     return this.hasData(r);
+  }
+  // After raw commands from the terminal: put the adapter back into the state the app relies on.
+  async restoreState() {
+    if (this._restoring) return this._restoring;
+    this._restoring = (async () => {
+      for (const c of ['E0', 'L0', 'S1', 'H1', 'AT1', 'CAF1', 'CRA', 'FCSM0', 'ST32']) await this.at(c);
+      if (this.proto) await this.at('SP' + this.proto.toString(16).toUpperCase());
+      this.curHeader = null; this._auto = false; this._physical = false; this.dirty = false;
+      await this.functional();
+    })();
+    try { await this._restoring; } finally { this._restoring = null; }
   }
   hasData(raw) { return this.lines(raw).some(l => /^[0-9A-F ]+$/i.test(l) && l.replace(/\s/g, '').length >= 6); }
 
@@ -124,12 +147,18 @@ export class Elm {
     await this.at('SH' + h);
     this.curHeader = h;
   }
+  // Broadcast addressing for standard OBD requests. Cheap when already set, so every standard
+  // request can (and does) make sure of it — even right after a physical-addressing operation.
   async functional() {
-    if (this.is29) await this.setHeader('18DB33F1'); else if (this.isCan) await this.setHeader('7DF'); else await this.setHeader('686AF1');
+    const h = this.is29 ? '18DB33F1' : this.isCan ? '7DF' : '686AF1';
+    if (this.curHeader === h && this._auto) return;
+    await this.setHeader(h);
     await this.at('AR');
+    this._auto = true;
   }
   // Physical addressing to one module on 11-bit CAN, with receive filter + flow control.
   async physical(req, res) {
+    this._auto = false;
     await this.setHeader(hex3(req));
     await this.at('CRA' + hex3(res));
     await this.at('FCSH' + hex3(req)); await this.at('FCSD300000'); await this.at('FCSM1');
@@ -138,7 +167,7 @@ export class Elm {
   async clearPhysical() {
     if (!this._physical) return;
     await this.at('CRA'); await this.at('FCSM0'); await this.at('AR');
-    this._physical = false; await this.functional();
+    this._physical = false; this._auto = false; await this.functional();
   }
 
   // ---------------- requests ----------------
@@ -201,10 +230,11 @@ export class Elm {
 export class Connection {
   constructor() {
     this.state = 'off'; this.elm = null; this.transport = null; this.voltage = null; this.manual = false;
-    this.attempts = 0; this.vTimer = null; this.lastLog = [];
+    this.attempts = 0; this.vTimer = null; this.lastLog = []; this.gen = 0;
   }
   set(state, msg) { this.state = state; bus.emit('conn', { state, msg }); }
   async open(transport, progress = () => {}) {
+    this.gen++; // a reconnect loop from an older connection must never act on this one
     this.manual = false;
     this.transport = transport;
     transport.onDisconnect = () => this._lost();
@@ -235,23 +265,27 @@ export class Connection {
     tick(); this.vTimer = setInterval(tick, 4000);
   }
   async _lost() {
-    if (this.manual || this.state === 'off') return;
+    if (this.manual || this.state === 'off' || this.state === 'reconnecting') return;
+    const gen = this.gen;
     this.set('reconnecting', 'انقطع الاتصال — إعادة المحاولة…');
     for (this.attempts = 1; this.attempts <= 6; this.attempts++) {
       await sleep(Math.min(8000, 800 * 2 ** (this.attempts - 1)));
-      if (this.manual) return;
+      if (this.manual || gen !== this.gen) return;
       try {
         await this.transport.reconnect(() => {});
+        if (this.manual || gen !== this.gen) return;
         this.elm.t.onData = d => this.elm._onData(d);
         const ok = await this.elm.resume();
+        if (this.manual || gen !== this.gen) return;
         this.set(ok ? 'on' : 'adapter', ok ? 'أُعيد الاتصال' : 'القطعة عادت لكن السيارة لا ترد');
         bus.emit('reconnected');
         return;
-      } catch (e) { bus.emit('conn', { state: 'reconnecting', msg: `محاولة ${this.attempts} فشلت` }); }
+      } catch (e) { if (gen === this.gen) bus.emit('conn', { state: 'reconnecting', msg: `محاولة ${this.attempts} فشلت` }); }
     }
-    this.set('err', 'تعذّرت إعادة الاتصال — اضغط «اتصال» للمحاولة يدويًا');
+    if (gen === this.gen && !this.manual) this.set('err', 'تعذّرت إعادة الاتصال — اضغط «اتصال» للمحاولة يدويًا');
   }
   async close() {
+    this.gen++;
     this.manual = true; clearInterval(this.vTimer);
     try { await this.transport?.close(); } catch {}
     this.elm = null; this.voltage = null; this.set('off', 'غير متصل'); bus.emit('volt', null);

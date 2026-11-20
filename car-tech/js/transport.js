@@ -289,11 +289,12 @@ export class DemoTransport {
     if (mode === 0x02) {
       if (!ecm) return null;
       const pid = req[1];
-      if (!this.dtc.stored.length) return pid === 0 ? [0x42, 0, 0, 0, 0, 0, 0] : null;
-      const ffPids = [2, 4, 5, 6, 7, 8, 9, 0x0b, 0x0c, 0x0d, 0x0f, 0x10, 0x11];
-      if (pid === 0) return [0x42, 0, 0, ...pidBitmap(ffPids, 0)];
-      if (pid === 2) return [0x42, 2, 0, ...dtcBytes(this.dtc.stored[0])];
-      const ff = { rpm: 690, running: true, ect: 88, iat: 41, load: 24, map: 34, maf: 5.0, tps: 15, stft1: 9, stft2: 8, ltft1: 17, ltft2: 15, speed: 0, timing: 13, o2: () => .2 };
+      // like real ECUs: the bitmap announces the next range (0x20, 0x40) and PID 02 = 0000 after a clear
+      const ffPids = [2, 4, 5, 6, 7, 8, 9, 0x0b, 0x0c, 0x0d, 0x0f, 0x10, 0x11, 0x20, 0x2f, 0x33, 0x40, 0x42];
+      if ([0, 0x20, 0x40].includes(pid)) return [0x42, pid, 0, ...pidBitmap(ffPids, pid)];
+      if (pid === 2) return [0x42, 2, 0, ...(this.dtc.stored.length ? dtcBytes(this.dtc.stored[0]) : [0, 0])];
+      if (!this.dtc.stored.length) return null;
+      const ff = { rpm: 690, running: true, ect: 88, iat: 41, load: 24, map: 34, maf: 5.0, tps: 15, stft1: 9, stft2: 8, ltft1: 17, ltft2: 15, speed: 0, timing: 13, o2: () => .2, fuel: 58, baro: 101, volt: 14.1 };
       if (!ffPids.includes(pid)) return null;
       return [0x42, pid, 0, ...this.pidVal(pid, ff, true)];
     }

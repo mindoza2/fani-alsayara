@@ -12,21 +12,34 @@ function db() {
     try {
       const r = indexedDB.open(DB, VER);
       r.onupgradeneeded = () => { const d = r.result; for (const s of STORES) if (!d.objectStoreNames.contains(s)) d.createObjectStore(s, { keyPath: 'id' }); };
-      r.onsuccess = () => { if (!done) { done = true; res(r.result); } };
+      r.onsuccess = () => {
+        const d = r.result;
+        // the browser may close the connection (iOS does in the background): reopen on next use
+        d.onclose = () => { if (dbp === p) dbp = null; };
+        d.onversionchange = () => { d.close(); if (dbp === p) dbp = null; };
+        if (!done) { done = true; res(d); }
+      };
       r.onerror = fail; r.onblocked = fail;
-      setTimeout(fail, 4000);
+      setTimeout(fail, 6000);
     } catch { fail(); }
   });
+  const p = dbp;
   return dbp;
 }
-function tx(name, mode, fn, memFn) {
+function tx(name, mode, fn, memFn, retry = true) {
   return db().then(d => {
     if (!d) return memFn(mem[name]);
     return new Promise((res, rej) => {
-      const t = d.transaction(name, mode); const s = t.objectStore(name);
-      const out = fn(s);
-      t.oncomplete = () => res(out?.result ?? out);
-      t.onerror = () => rej(t.error);
+      let t;
+      try { t = d.transaction(name, mode); } catch (e) {
+        if (retry) { dbp = null; tx(name, mode, fn, memFn, false).then(res, rej); return; }
+        rej(e); return;
+      }
+      const out = fn(t.objectStore(name));
+      // a request's value is its .result (undefined when a record is missing — never the request itself)
+      t.oncomplete = () => res(out instanceof IDBRequest ? out.result : out);
+      t.onerror = () => rej(t.error || new Error('تعذّر الحفظ على هذا الجهاز'));
+      t.onabort = () => rej(t.error || new Error('أُلغيت عملية التخزين'));
     });
   });
 }

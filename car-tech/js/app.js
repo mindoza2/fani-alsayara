@@ -26,7 +26,7 @@ export const ROUTES = [
   { id: 'settings', ic: '⚒', t: 'الإعدادات', g: 'السجل', v: V3.settingsView },
 ];
 const BOTTOM = ['dash', 'scan', 'live', 'ai'];
-let cleanup = null, current = null;
+let cleanup = null, current = null, routeSeq = 0;
 
 function buildNav() {
   const nav = $('#nav'); let g = '';
@@ -41,6 +41,7 @@ function buildNav() {
   $('#sidebarFoot').innerHTML = `التخزين محلي على هذا الجهاز فقط.<br>كل معلومة تحمل مستوى ثقة: <span class="conf c-sure">موثوق</span> <span class="conf c-best">أفضل جهد</span> <span class="conf c-est">تقديري</span>`;
 }
 async function route() {
+  const my = ++routeSeq;
   const id = (location.hash.match(/^#\/([\w-]+)/) || [])[1] || 'dash';
   const r = ROUTES.find(x => x.id === id) || ROUTES[0];
   if (cleanup) { try { cleanup(); } catch (e) { console.error(e); } cleanup = null; }
@@ -48,8 +49,14 @@ async function route() {
   $$('[data-r]').forEach(a => a.classList.toggle('active', a.dataset.r === r.id));
   $('#pageTitle').textContent = r.t;
   document.title = r.t + ' — فني السيارة';
-  const c = $('#content'); c.innerHTML = ''; c.scrollTop = 0; window.scrollTo(0, 0);
-  try { cleanup = (await r.v(c)) || null; } catch (e) { console.error(e); c.innerHTML = `<div class="danger">حدث خطأ في عرض الصفحة: ${esc(e.message)}</div>`; }
+  const host = $('#content'); host.innerHTML = ''; host.scrollTop = 0; window.scrollTo(0, 0);
+  // every visit renders into its own container: work that finishes after the person has moved on
+  // (a scan, a reply from Claude, a timer) lands in a detached element, never over the new page
+  const c = document.createElement('div'); c.className = 'view'; host.appendChild(c);
+  let fn = null;
+  try { fn = (await r.v(c)) || null; } catch (e) { console.error(e); c.innerHTML = `<div class="danger">حدث خطأ في عرض الصفحة: ${esc(e.message)}</div>`; }
+  if (my !== routeSeq) { if (typeof fn === 'function') try { fn(); } catch (e) { console.error(e); } return; } // left while it was loading
+  cleanup = typeof fn === 'function' ? fn : null;
 }
 export function rerender() { route(); }
 
@@ -74,6 +81,15 @@ function statusBar() {
     $$('[data-badge="codes"],[data-badge="scan"]').forEach(b => { b.textContent = n; b.classList.toggle('hidden', !n); });
   };
   bus.on('data', badges);
+  // the operation that owns the adapter (scan, module scan, clearing…) is visible on every page
+  const bb = $('#busyBar');
+  const busy = () => {
+    const b = app.busy; bb.classList.toggle('hidden', !b);
+    if (!b) return;
+    bb.querySelector('i').style.width = Math.round((b.p || 0) * 100) + '%';
+    bb.querySelector('span').textContent = `${b.label}${b.p ? ' — ' + Math.round(b.p * 100) + '%' : ''}${b.t ? ' · ' + b.t : ''}`;
+  };
+  bus.on('scan', busy); bus.on('progress', busy);
 }
 
 /* ---------------- voice control (Arabic) ---------------- */

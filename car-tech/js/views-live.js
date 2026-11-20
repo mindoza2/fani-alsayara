@@ -1,5 +1,5 @@
 // Live data, trip recorder / guided tests, predictive trends, phone sensors.
-import { $, $$, esc, bus, toast, conf, fmtDate, fmtTime, uid, sleep, linreg, download, shareFile, confirmAction } from './util.js';
+import { $, $$, esc, bus, toast, conf, fmtDate, fmtTime, uid, sleep, linreg, download, shareFile, confirmAction, safeImg } from './util.js';
 import { app, startLive, stopLive, requireConn } from './core.js';
 import { PIDS, pidName, rangeStatus, VOLT_RANGES } from './obd.js';
 import { pidGauge, updatePidGauge, drawChart, sparkline } from './widgets.js';
@@ -11,16 +11,30 @@ import { tripReportHtml } from './report.js';
 const COLORS = ['#3de0ff', '#ffb547', '#a57bff', '#33e39b', '#ff5468'];
 const connected = () => app.conn.ready;
 const notConn = c => { c.innerHTML = `<div class="card"><div class="empty"><div class="big">◔</div>اتصل بالسيارة أولًا (أو شغّل الوضع التجريبي) لعرض القيم.<div class="btn-row" style="justify-content:center;margin-top:12px"><a class="btn primary" href="#/connect">الاتصال</a></div></div></div>`; };
+// Show "connect first" until a connection is made, then open the page — keeping the page's own
+// cleanup so leaving it later really stops its polling and listeners.
+function whenConnected(c, view) {
+  notConn(c);
+  let inner = null;
+  const off = bus.on('conn', ({ state }) => {
+    if (state !== 'on' || inner) return;
+    const r = view(c); inner = typeof r === 'function' ? r : () => {};
+  });
+  return () => { off(); inner?.(); };
+}
 
 /* =========================== Live data =========================== */
 export function liveView(c) {
-  if (!connected()) { notConn(c); const off = bus.on('conn', ({ state }) => state === 'on' && liveView(c)); return off; }
-  const ecus = [...app.pidSupport.keys()];
+  if (!connected()) return whenConnected(c, liveView);
+  let ecus = [...app.pidSupport.keys()];
   let ecu = app.primaryEcu();
   let gaugePids = [], chartPids = [], recording = null;
   const offs = [];
   const gs = {};
   const draw = () => {
+    // the computers can change under this page (new connection / scan): follow them
+    if (!app.pidSupport.has(ecu)) { ecus = [...app.pidSupport.keys()]; ecu = app.primaryEcu(); chartPids = []; }
+    else ecus = [...app.pidSupport.keys()];
     const sup = [...(app.pidSupport.get(ecu) || [])].filter(p => p % 0x20 !== 0 && p !== 0x01 && p !== 0x41 && p !== 0x02).sort((a, b) => a - b);
     gaugePids = settings().gauges.filter(p => sup.includes(p));
     if (!gaugePids.length) gaugePids = sup.filter(p => PIDS[p]?.[4] != null).slice(0, 6);
@@ -41,7 +55,7 @@ export function liveView(c) {
       <div class="tbl-wrap"><table class="tbl"><thead><tr><th>القيمة</th><th>الآن</th><th>النطاق الطبيعي</th><th>الحالة</th></tr></thead><tbody id="lT">${sup.map(p => `<tr data-p="${p}"><td>${esc(pidName(p))} <span class="mono dim small">0x${p.toString(16).toUpperCase().padStart(2, '0')}</span>${PIDS[p] ? '' : ' ' + conf('est')}</td><td class="num v">--</td><td class="small">${PIDS[p]?.[7] ? `${PIDS[p][7].ok[0]} – ${PIDS[p][7].ok[1]} ${esc(PIDS[p][1])}` : '<span class="dim">—</span>'}</td><td class="s"></td></tr>`).join('')}</tbody></table></div></div>`;
     const gBox = $('#lG', c);
     for (const k in gs) delete gs[k];
-    gaugePids.forEach(p => { const g = pidGauge(p, true); gs[p] = g; g.querySelector('.rm').onclick = () => { saveSettings({ gauges: settings().gauges.filter(x => x !== p).concat(settings().gauges.includes(p) ? [] : []) }); gaugePids = gaugePids.filter(x => x !== p); saveSettings({ gauges: gaugePids }); draw(); }; gBox.appendChild(g); });
+    gaugePids.forEach(p => { const g = pidGauge(p, true); gs[p] = g; g.querySelector('.rm').onclick = () => { gaugePids = gaugePids.filter(x => x !== p); saveSettings({ gauges: gaugePids }); draw(); }; gBox.appendChild(g); });
     $('#lEcu', c).onchange = e => { ecu = e.target.value; chartPids = []; draw(); };
     $('#lAdd', c).onchange = e => { const p = +e.target.value; if (!p) return; saveSettings({ gauges: [...gaugePids, p] }); draw(); };
     $('#lChart', c).onchange = e => { const p = +e.target.value; if (p && !chartPids.includes(p)) chartPids = [...chartPids, p].slice(-3); draw(); };
@@ -58,19 +72,24 @@ export function liveView(c) {
     };
     startLive({ fast: [...new Set([...gaugePids, ...chartPids, 0x06, 0x07, 0x08, 0x09, 0x0c].filter(p => sup.includes(p)))], slow: sup, rateMs: 250 });
   };
+  let slowAt = 0;
   const tick = () => {
     const lv = {}; for (const v of app.live.values()) if (v.ecu === ecu) lv[v.pid] = v;
     const vals = Object.fromEntries(Object.entries(lv).map(([k, v]) => [k, v.value]));
     const ctx = app.ctx();
     for (const [p, g] of Object.entries(gs)) updatePidGauge(g, +p, vals[p], ctx);
+    if (recording) recording.push({ t: Date.now(), v: vals, volt: app.conn.voltage });
+    const cv = $('#lCv', c);
+    if (cv) drawChart(cv, chartPids.map((p, i) => ({ name: pidName(p), color: COLORS[i], data: app.hist.get(`${ecu}:${p}`) || [] })), { tspan: 60000, band: chartPids.length === 1 ? PIDS[chartPids[0]]?.[7]?.ok : null });
+    // the long table and the text panels change slowly: refreshing them once a second keeps phones smooth
+    if (Date.now() - slowAt < 1000) return;
+    slowAt = Date.now();
     $$('#lT tr', c).forEach(tr => {
       const p = +tr.dataset.p, v = lv[p]; if (!v) return;
       tr.querySelector('.v').textContent = `${v.text} ${v.unit || ''}`;
       const st = rangeStatus(p, v.value, ctx);
       tr.querySelector('.s').innerHTML = st.st === 'ok' ? '<span class="badge ok">طبيعي</span>' : st.st === 'warn' ? '<span class="badge warn">قرب الحد</span>' : st.st === 'bad' ? '<span class="badge err">خارج الطبيعي</span>' : `<span class="dim small">${esc(st.note || '')}</span>`;
     });
-    const cv = $('#lCv', c);
-    if (cv) drawChart(cv, chartPids.map((p, i) => ({ name: pidName(p), color: COLORS[i], data: app.hist.get(`${ecu}:${p}`) || [] })), { tspan: 60000, band: chartPids.length === 1 ? PIDS[chartPids[0]]?.[7]?.ok : null });
     const tr = $('#lTrims', c);
     if (tr) {
       const bar = (lab, v) => v == null ? '' : `<div class="row small" style="margin:6px 0"><span style="width:150px">${lab}</span><div class="range-bar" style="flex:1"><div class="ok" style="left:30%;right:30%"></div><div class="mk" style="left:${Math.max(0, Math.min(100, (v + 25) * 2))}%"></div></div><span class="num" style="width:60px;text-align:left">${v > 0 ? '+' : ''}${v.toFixed(1)}%</span></div>`;
@@ -85,10 +104,16 @@ export function liveView(c) {
         ${vals[0x42] != null ? `<dt>فولت كمبيوتر المكينة</dt><dd class="num">${vals[0x42].toFixed(2)} V ${V ? `<span class="small dim">(الفرق ${Math.abs(V - vals[0x42]).toFixed(2)}V)</span>` : ''}</dd>` : ''}
         <dt>المتوقع الآن</dt><dd>${run ? 'شغالة: 13.5–14.8V' : 'طافية: 12.4–12.7V'}</dd></dl><a class="btn sm" href="#/trip?test=crank" style="margin-top:6px">اختبار التدوير (Cranking)</a> <a class="btn sm" href="#/trip?test=charge" style="margin-top:6px">اختبار الشحن</a>`;
     }
-    if (recording) recording.push({ t: Date.now(), v: vals, volt: app.conn.voltage });
   };
   offs.push(bus.on('live', tick));
-  offs.push(bus.on('conn', ({ state }) => { if (state === 'off') notConn(c); }));
+  // disconnected → show "connect first"; connected again → rebuild the page (polling restarts with it)
+  let shown = true;
+  offs.push(bus.on('conn', ({ state }) => {
+    if (state === 'off' || state === 'err') { if (shown) { stopLive(); notConn(c); shown = false; } }
+    else if (state === 'on' && !shown) { shown = true; draw(); }
+  }));
+  // a new connection discovers its computers after "connected": redraw once they are known
+  offs.push(bus.on('data', () => { if (shown && !app.scanning && app.pidSupport.size && (!app.pidSupport.has(ecu) || ecus.length !== app.pidSupport.size)) draw(); }));
   draw();
   return () => { offs.forEach(f => f()); stopLive(); };
 }
@@ -182,7 +207,7 @@ const TESTS = {
   },
 };
 export function tripView(c) {
-  if (!connected()) { notConn(c); return; }
+  if (!connected()) return whenConnected(c, tripView);
   const prm = new URLSearchParams(location.hash.split('?')[1] || '');
   const offs = []; let run = null;
   const list = async () => {
@@ -224,10 +249,19 @@ export function tripView(c) {
         renderLive();
       },
     });
-    // pending DTC watch for free/road trips
+    // pending DTC watch: only codes that appear DURING this recording are reported as new
+    const me = run;
+    const readPending = async () => { const r = await app.obd.readDtcs('07'); return [...new Set([...r.map.values()].flat())]; };
+    if (!app.busy) readPending().then(codes => { if (!me.seen) me.seen = codes; }).catch(() => {});
     run.dtcTimer = setInterval(async () => {
-      if (!run || run.done) return;
-      try { const r = await app.obd.readDtcs('07'); const codes = [...r.map.values()].flat(); const nw = codes.filter(x => !(run.seen || []).includes(x)); if (nw.length) ev('ظهر عطل معلّق: ' + nw.join('، '), 'bad'); run.seen = codes; } catch {}
+      if (run !== me || me.done || app.busy || !app.conn.ready) return; // never in the middle of another operation
+      try {
+        const codes = await readPending();
+        if (!me.seen) { me.seen = codes; return; }
+        const nw = codes.filter(x => !me.seen.includes(x));
+        if (nw.length && run === me) ev('ظهر عطل معلّق: ' + nw.join('، '), 'bad');
+        me.seen = [...new Set([...me.seen, ...codes])];
+      } catch {}
     }, 60000);
     renderRun();
   };
@@ -286,7 +320,7 @@ export function tripView(c) {
       me.waiting = true; renderRun();
       await sleep(app.demo ? 1500 : 3000);
       if (run !== me) return;
-      const vs = []; for (let i = 0; i < 5; i++) { const v = await app.conn.elm.voltage(); if (v) vs.push(v); await sleep(200); }
+      const vs = []; for (let i = 0; i < 5; i++) { const v = await app.conn.elm?.voltage(); if (v) vs.push(v); await sleep(200); }
       const avg = vs.length ? vs.reduce((a, b) => a + b, 0) / vs.length : null;
       me.res[stp.sample] = avg; if (run === me) me.ev(`${stp.t}: ${avg ? avg.toFixed(2) + 'V' : 'لا قراءة'}`);
     }
@@ -299,7 +333,7 @@ export function tripView(c) {
     const vs = []; const t0 = Date.now(); run.ev('بدأ تسجيل الفولت السريع — دوّر المكينة الآن');
     if (app.demo) setTimeout(() => app.conn.transport.crank(), 1500);
     const me = run;
-    while (Date.now() - t0 < 8000 && run === me) { const v = await app.conn.elm.voltage(); if (v) vs.push([Date.now(), v]); const i = c.querySelector('#rProg i'); if (i) i.style.width = ((Date.now() - t0) / 80) + '%'; }
+    while (Date.now() - t0 < 8000 && run === me) { if (!app.conn.elm) { await sleep(200); continue; } const v = await app.conn.elm.voltage(); if (v) vs.push([Date.now(), v]); const i = c.querySelector('#rProg i'); if (i) i.style.width = ((Date.now() - t0) / 80) + '%'; }
     if (run !== me) return;
     if (!vs.length) { run.res = { min: null }; finish(); return; }
     const min = Math.min(...vs.map(x => x[1]));
@@ -415,6 +449,7 @@ export function sensorsView(c) {
   let stream = null, audio = null, raf = 0;
   const draw = async () => {
     const photos = await store.all('photos');
+    if (audio) stopMic(); // the spectrum canvas is about to be replaced
     c.innerHTML = `<div class="grid g2">
       <div class="card"><div class="card-head"><h2>📷 الكاميرا: توثيق وتأشير القطع</h2></div>
         <p class="small muted">التقط صورة للقطعة أو الفيش، ثم اضغط على الصورة لوضع دوائر تأشير، واكتب ملاحظة. تُحفظ محليًا وتُرفق بالتقرير. الكاميرا لا تشخّص القطعة — هي للتوثيق والتأشير فقط.</p>
@@ -424,7 +459,7 @@ export function sensorsView(c) {
         <div class="btn-row hidden" id="sSnapRow" style="margin-top:8px"><button class="btn primary" id="sSnap">التقاط</button></div>
         <div id="sEdit"></div>
         <h3 style="margin-top:14px">الصور المحفوظة (${photos.length})</h3>
-        <div class="photo-grid">${photos.map(p => `<div><img src="${p.data}" alt=""><div class="small">${esc(p.note || '')}</div><div class="small dim">${fmtDate(p.t)}</div><button class="btn sm ghost" data-del="${p.id}">حذف</button></div>`).join('') || '<div class="dim small">لا صور</div>'}</div></div>
+        <div class="photo-grid">${photos.filter(p => safeImg(p.data)).map(p => `<div><img src="${safeImg(p.data)}" alt=""><div class="small">${esc(p.note || '')}</div><div class="small dim">${fmtDate(p.t)}</div><button class="btn sm ghost" data-del="${esc(p.id)}">حذف</button></div>`).join('') || '<div class="dim small">لا صور</div>'}</div></div>
       <div class="card"><div class="card-head"><h2>🎙 المايك: تحليل الأصوات</h2></div>
         <p class="small muted">يعرض طيف الصوت ويحدد الترددات الغالبة. إذا كانت السيارة متصلة يقارنها بدوران المكينة ليعرف إن كان الصوت مرتبطًا بالمكينة (دوران العمود، الإشعال، الكامات). <b>حدود صريحة:</b> مايك الجوال وضجيج المكان يحدّان الدقة، والتحليل لا يحدد القطعة التالفة بعينها ${conf('est')}.</p>
         ${hasCam ? '<button class="btn primary" id="sMic">بدء الاستماع</button>' : '<div class="warn">المتصفح لا يسمح بالوصول للمايك.</div>'}

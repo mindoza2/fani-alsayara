@@ -150,6 +150,32 @@ export function decodeReadiness(b) {
   });
   return { mil: !!(A & 0x80), dtcCount: A & 0x7f, diesel, mons };
 }
+// Readiness of several emission computers as one vehicle status (SAE J1979): a monitor is
+// supported if any computer supports it and complete only when every computer that supports it
+// reports it complete; the MIL is on if any computer commands it. entries: [[ecu, readiness], …]
+export function combineReadiness(entries) {
+  const list = (entries || []).filter(([, r]) => r && Array.isArray(r.mons));
+  if (!list.length) return null;
+  const score = r => r.mons.filter(m => m.sup).length;
+  const base = list.slice().sort((a, b) => score(b[1]) - score(a[1]))[0][1]; // normally the engine computer
+  const mons = base.mons.map(m => ({ name: m.name, cont: !!m.cont, sup: !!m.sup, ready: !!m.ready }));
+  for (const [, r] of list) {
+    if (r === base) continue;
+    for (const m of r.mons) {
+      if (!m.sup) continue;
+      const x = mons.find(y => y.name === m.name);
+      if (!x) mons.push({ name: m.name, cont: !!m.cont, sup: true, ready: !!m.ready });
+      else if (!x.sup) { x.sup = true; x.ready = !!m.ready; } else if (!m.ready) x.ready = false;
+    }
+  }
+  return { mil: list.some(([, r]) => r.mil), dtcCount: list.reduce((s, [, r]) => s + (r.dtcCount || 0), 0), diesel: !!base.diesel, mons, count: list.length };
+}
+// Completion counted over the non-continuous monitors (the ones an emissions inspection checks).
+export function readinessStats(r) {
+  if (!r) return null;
+  const sup = r.mons.filter(m => m.sup && !m.cont), notReady = sup.filter(m => !m.ready);
+  return { total: sup.length, ready: sup.length - notReady.length, notReady };
+}
 
 /* --------------------------- Mode 06 --------------------------- */
 const UAS = {
@@ -220,6 +246,8 @@ export class Obd {
   // Read a list of PIDs (from one ECU's supported set). Uses multi-PID requests on CAN.
   async readPids(pids, onlyEcu = null) {
     const res = new Map(); // `${ecu}:${pid}` → {ecu,pid,bytes,...decoded}
+    if (!pids.length) return res;
+    await this.elm.functional();
     const groups = [];
     const known = pids.filter(p => PIDS[p] && PIDS[p][2]);
     const unknown = pids.filter(p => !(PIDS[p] && PIDS[p][2]));
@@ -279,35 +307,52 @@ export class Obd {
     for (const v of r41.values()) { const o = out.get(v.ecu); if (o) o.cycle = decodeReadiness(v.bytes); }
     return out;
   }
+  // Freeze frame (Mode 02, frame 0). PID 02 names the code that stored the frame; 0000 means no
+  // frame is stored, so nothing is shown for that computer. Support PIDs (00/20/40…) are bitmaps
+  // that announce the next range — they are followed, never shown as data.
   async freezeFrame() {
     await this.elm.functional();
-    const sup = new Map();
-    const r = await this.elm.request('020000', 4000);
-    for (const m of r.msgs) {
-      if (m.neg || m.bytes[0] !== 0x42) continue;
-      const set = new Set(); const bm = m.bytes.slice(3, 7);
-      for (let i = 0; i < 32; i++) if (bm[i >> 3] & (0x80 >> (i & 7))) set.add(i + 1);
-      sup.set(m.ecu, set);
+    const sup = new Map(); // ecu → Set of announced PIDs
+    let base = 0, more = true;
+    while (more && base <= 0xe0) {
+      more = false;
+      const r = await this.elm.request('02' + hex2(base) + '00', 4000);
+      for (const m of r.msgs) {
+        if (m.neg || m.bytes[0] !== 0x42 || m.bytes[1] !== base) continue;
+        const set = sup.get(m.ecu) || new Set(); sup.set(m.ecu, set);
+        const bm = m.bytes.slice(3, 7);
+        for (let i = 0; i < 32; i++) if (bm[i >> 3] & (0x80 >> (i & 7))) set.add(base + i + 1);
+        if (set.has(base + 0x20)) more = true;
+      }
+      base += 0x20;
+    }
+    const trigger = new Map(); // ecu → code, or null when the computer reports 0000 (no frame stored)
+    if ([...sup.values()].some(s => s.has(2))) {
+      const r = await this.elm.request('020200', 3000);
+      for (const m of r.msgs) {
+        if (m.neg || m.bytes[0] !== 0x42 || m.bytes[1] !== 2 || !sup.has(m.ecu)) continue;
+        const d = m.bytes.slice(3);
+        trigger.set(m.ecu, d[0] || d[1] ? dtcFromBytes(d[0], d[1]) : null);
+      }
+    }
+    const none = ecu => trigger.has(ecu) && trigger.get(ecu) === null;
+    const items = new Map([...sup.keys()].filter(e => !none(e)).map(e => [e, []]));
+    const isData = p => p % 0x20 !== 0 && p !== 0x01 && p !== 0x02 && p !== 0x41;
+    const pids = [...new Set([...items.keys()].flatMap(e => [...sup.get(e)]))].filter(isData).sort((a, b) => a - b);
+    for (const pid of pids) { // one request per PID; every computer that stored a frame answers it
+      const r = await this.elm.request('02' + hex2(pid) + '00', 3000);
+      for (const m of r.msgs) {
+        if (m.neg || m.bytes[0] !== 0x42 || m.bytes[1] !== pid || !items.has(m.ecu) || !sup.get(m.ecu).has(pid)) continue;
+        items.get(m.ecu).push({ pid, name: pidName(pid), ...decodePid(pid, m.bytes.slice(3)) });
+      }
     }
     const out = new Map();
-    for (const [ecu, set] of sup) {
-      if (!set.size) continue;
-      const items = []; let dtc = null;
-      for (const pid of set) {
-        const rr = await this.elm.request('02' + hex2(pid) + '00', 3000);
-        for (const m of rr.msgs) {
-          if (m.ecu !== ecu || m.neg || m.bytes[0] !== 0x42) continue;
-          const data = m.bytes.slice(3);
-          if (pid === 2) { if (data[0] || data[1]) dtc = dtcFromBytes(data[0], data[1]); }
-          else items.push({ pid, name: pidName(pid), ...decodePid(pid, data) });
-        }
-      }
-      out.set(ecu, { dtc, items });
-    }
+    for (const ecu of sup.keys()) out.set(ecu, none(ecu) ? { dtc: null, items: [], none: true } : { dtc: trigger.get(ecu) || null, items: items.get(ecu) || [] });
     return out;
   }
   async supportBitmap(modeHex, extraZero = '') {
     // generic: mode XX, ids 00,20,40...  → Map ecu → Set
+    await this.elm.functional();
     const out = new Map();
     for (let base = 0; base <= 0xe0; base += 0x20) {
       const r = await this.elm.request(modeHex + hex2(base) + extraZero, 4000);
