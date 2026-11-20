@@ -338,6 +338,7 @@ export function scanView(c) {
     draw();
   };
   offs.push(bus.on('conn', () => draw()));
+  offs.push(bus.on('scan', () => draw()));
   draw();
   return () => offs.forEach(f => f());
 }

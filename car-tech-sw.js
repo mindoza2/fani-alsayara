@@ -1,5 +1,5 @@
 // Offline support for «فني السيارة»: network first, cached copy when offline.
-const CACHE = 'car-tech-v1';
+const CACHE = 'car-tech-v2';
 const FILES = ['index.html', 'car-tech/app.css', 'car-tech/icon.svg', 'car-tech/manifest.webmanifest',
   ...['app', 'util', 'nav', 'store', 'transport', 'elm', 'obd', 'dtcdb', 'network', 'diag', 'ai', 'core', 'widgets', 'report', 'views-core', 'views-live', 'views-tools'].map(f => `car-tech/js/${f}.js`)];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)).catch(() => {})); self.skipWaiting(); });

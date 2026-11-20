@@ -152,8 +152,10 @@ export function setVehicle(v) {
 /* ---------------- full scan ---------------- */
 export async function fullScan({ modules = true, fullRange = false, progress = () => {} } = {}) {
   if (!app.conn.ready) throw new Error('غير متصل بالسيارة');
-  if (app.scanning) throw new Error('يوجد فحص قيد التنفيذ');
-  app.scanning = true; bus.emit('scan', { running: true });
+  if (app.scanning && Date.now() - (app.scanStart || 0) < 180000) throw new Error('يوجد فحص قيد التنفيذ');
+  app.scanning = true; app.scanStart = Date.now(); bus.emit('scan', { running: true });
+  // safety net: if a Bluetooth op stalls, release the flag so the scan button can't stay stuck
+  const scanWatchdog = setTimeout(() => { if (app.scanning && Date.now() - app.scanStart >= 175000) { app.scanning = false; app.conn.pauseVolt = false; bus.emit('scan', { running: false }); bus.emit('data'); } }, 180000);
   const steps = []; const step = (p, t) => { progress(p, t); };
   try {
     app.conn.pauseVolt = true;
@@ -189,7 +191,7 @@ export async function fullScan({ modules = true, fullRange = false, progress = (
     step(1, 'اكتمل الفحص');
     return rec;
   } finally {
-    app.scanning = false; app.conn.pauseVolt = false; bus.emit('scan', { running: false }); bus.emit('data');
+    clearTimeout(scanWatchdog); app.scanning = false; app.conn.pauseVolt = false; bus.emit('scan', { running: false }); bus.emit('data');
   }
 }
 export async function scanModules({ fullRange = false, progress = () => {} } = {}) {
