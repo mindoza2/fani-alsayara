@@ -101,11 +101,14 @@ export function correlate(ctx) {
   });
   const lowV = has(codes, /^P056[02]$|^P062[0-2]$/);
   const vNow = ctx.volt;
-  if (lowV.length || (vNow && ((ctx.running && vNow < 13.2) || (!ctx.running && vNow < 12.2)))) add({
+  // charging target depends on the car: GM RVC keeps it at 12.6–13.1V on purpose with a charged battery
+  const cr = ctx.charge || { ok: [13.5, 14.8], rvc: false };
+  const lowRun = cr.rvc ? cr.ok[0] : 13.2;
+  if (lowV.length || (vNow && ((ctx.running && vNow < lowRun) || (!ctx.running && vNow < 12.2)))) add({
     title: 'نظام الشحن أو البطارية', codes: lowV, circuit: 'charging', score: 0.7,
     causes: [{ t: ctx.running ? 'الدينمو لا يشحن كفاية' : 'بطارية ضعيفة', p: 0.5 }, { t: 'أطراف/أرضي متأكسد أو مرتخي', p: 0.3 }, { t: 'سحب كهربائي أثناء الإطفاء', p: 0.2 }],
-    evidence: lowV.map(c => `كود ${c}`).concat(vNow ? [`الفولت الآن ${vNow.toFixed(2)}V (${ctx.running ? 'المكينة شغالة' : 'المكينة طافية'})`] : []),
-    steps: [{ t: 'نفّذ «اختبار التشغيل Cranking» و«اختبار الشحن» من مسجّل المشوار', m: 'فولت البطارية', e: 'طافية 12.4–12.7V، أقل فولت أثناء التدوير > 9.6V، شغالة 13.5–14.8V' }, { t: 'قِس فرق الجهد بين سالب البطارية وجسم المكينة أثناء التدوير', m: 'فرق جهد الأرضي', e: 'أقل من 0.3V' }],
+    evidence: lowV.map(c => `كود ${c}`).concat(vNow ? [`الفولت الآن ${vNow.toFixed(2)}V (${ctx.running ? 'المكينة شغالة' : 'المكينة طافية'})`] : []).concat(cr.rvc ? [cr.note] : []),
+    steps: [{ t: 'نفّذ «اختبار التشغيل Cranking» و«اختبار الشحن» من مسجّل المشوار', m: 'فولت البطارية', e: `طافية 12.4–12.7V، أقل فولت أثناء التدوير > 9.6V، شغالة ${cr.ok[0]}–${cr.ok[1]}V${cr.rvc ? ' (ومع الأحمال يرتفع ~13.9–14.5V)' : ''}` }, { t: 'قِس فرق الجهد بين سالب البطارية وجسم المكينة أثناء التدوير', m: 'فرق جهد الأرضي', e: 'أقل من 0.3V' }],
   });
   const ref5 = has(codes, /^P0641|^P0651|^P0697|^P06A6/);
   const lowIn = has(codes, /^P0(107|112|117|122|222|452|462|522|532|192|342|337)$/);
@@ -151,12 +154,35 @@ export function correlate(ctx) {
     causes: [{ t: 'مستوى/نوع/لزوجة الزيت', p: 0.3 }, { t: 'صولونويد التحكم بالكامات', p: 0.3 }, { t: 'تمدد سلسلة التوقيت أو تلف المنظّم', p: 0.4 }],
     evidence: [`أكواد: ${list(tm)}`], steps: [{ t: 'افحص مستوى الزيت وحالته أولًا', m: 'عصا الزيت', e: 'ضمن الحد ونظيف' }],
   });
+  // Cylinder deactivation (SAE P3400–P3496: AFM / DOD / MDS…). Solenoids worked by engine oil
+  // pressure and switched by the engine computer; the computer only tests them if its calibration
+  // says the engine has them.
+  const cyl = has(codes, /^P34(0\d|[1-8]\d|9[0-6])$/);
+  if (cyl.length) add({
+    title: 'نظام إيقاف السلندرات لتوفير الوقود (AFM/DOD)', codes: cyl, score: 0.6,
+    causes: [
+      { t: 'فيش أو سلك مفتوح/متآكل في دائرة صولونويد إيقاف السلندر', p: 0.35 },
+      { t: 'برمجة الكمبيوتر ما زالت تتوقع النظام بعد إزالته أو بعد تبديل المكينة بمكينة لا تحتويه', p: 0.25 },
+      { t: 'الصولونويد نفسه', p: 0.2 },
+      { t: 'مستوى أو ضغط الزيت (النظام يشتغل بضغط الزيت)', p: 0.2 },
+    ],
+    evidence: [`أكواد: ${list(cyl)}`].concat(cyl.length > 1 ? ['أكثر من سلندر معًا: يرجّح سببًا مشتركًا (التغذية/الفيش/البرمجة) أكثر من صولونويد واحد'] : []),
+    steps: [
+      { t: 'تأكد هل المكينة الحالية فيها نظام إيقاف السلندرات أصلًا', m: 'مواصفات المكينة / وجود مجموعة الصولونويدات', e: 'إذا غير موجود: لازم يكون النظام مطفأ في برمجة الكمبيوتر' },
+      { t: 'افحص فيش مجموعة الصولونويدات والأسلاك', m: 'تغذية 12V مع السويتش ON + سلك التحكم لكل صولونويد', e: 'التغذية = فولت البطارية، وسلك التحكم متصل بدون قطع' },
+      { t: 'افحص مستوى الزيت وضغطه', m: 'عصا الزيت / حساس الضغط', e: 'ضمن الحد' },
+    ],
+  });
   // Any code left uncovered → individual entry
   const covered = new Set(out.flatMap(o => o.codes));
   for (const c of codes.filter(c => !covered.has(c))) {
     const d = describeDtc(c);
-    add({ title: `${c}: ${d.text}`, codes: [c], circuit: circuitFor(c), score: 0.4, conf: 'est', causes: [{ t: 'الفيش/الأسلاك أو القطعة نفسها', p: 1 }], evidence: [`كود منفرد بدون ارتباط بأكواد أخرى`], steps: [{ t: 'افحص الفيش والأسلاك للقطعة المذكورة', m: 'تغذية/أرضي/إشارة', e: 'حسب المخطط' }] });
+    add({ title: `${c}: ${d.text}`, codes: [c], circuit: circuitFor(c), score: 0.4, conf: 'est', causes: [{ t: 'الفيش أو الأسلاك', p: 0.5 }, { t: 'القطعة نفسها', p: 0.35 }, { t: 'الكمبيوتر أو برمجته', p: 0.15 }], evidence: [`كود منفرد بدون ارتباط بأكواد أخرى`], steps: [{ t: 'افحص الفيش والأسلاك للقطعة المذكورة', m: 'تغذية/أرضي/إشارة', e: 'حسب المخطط' }] });
   }
+  // A permanent-only code was confirmed in the past and is waiting for a passing re-test — say so
+  const kinds = {}; for (const d of ctx.dtcs) if (d.kind) (kinds[d.code] ||= new Set()).add(d.kind);
+  const permOnly = codes.filter(c => kinds[c] && [...kinds[c]].every(k => k === 'perm'));
+  if (permOnly.length) for (const o of out) { const p = o.codes.filter(c => permOnly.includes(c)); if (p.length) o.evidence.push(`${list(p)} «دائم» فقط: تأكّد سابقًا ثم مُسح أو انطفأت لمبته، والكمبيوتر لم يُعِد اختباره بنجاح بعد — ليس بالضرورة عطلًا نشطًا الآن`); }
   // Trims abnormal without codes
   if (t && !lean.length && !rich.length && (Math.abs(t.all1) > 12 || (t.hasBank2 && Math.abs(t.all2) > 12))) add({
     title: 'تعديل الوقود خارج الطبيعي (بدون كود بعد)', codes: [], circuit: 'lean', score: 0.55, early: true,
@@ -273,7 +299,7 @@ export function getCircuit(id) {
 export const CIRCUIT_LIST = () => [...new Set([...Object.keys(CIRCUITS), ...Object.keys(USER_CIRCUITS)])];
 
 // Evaluate live readings on a circuit: where does the chain break? (estimated)
-export function chainCheck(id, live, volt) {
+export function chainCheck(id, live, volt, charge = { ok: [13.5, 14.8], rvc: false }) {
   const r = [];
   const v = p => live?.[p];
   if (id === 'ect' && v(0x05) != null) {
@@ -287,7 +313,7 @@ export function chainCheck(id, live, volt) {
   if (id === 'maf' && v(0x10) != null) r.push(v(0x10) < 0.5 && live?.running ? { wire: 1, st: 'bad', t: 'لا إشارة تدفق والمكينة شغالة' } : { wire: 1, st: 'ok', t: `يقرأ ${v(0x10).toFixed(1)} g/s` });
   if (id === 'o2' && v(0x14) != null) r.push(Math.abs(v(0x14) - 0.45) < 0.03 ? { wire: 2, st: 'warn', t: 'الفولت ثابت قرب 0.45V: الحساس غير نشط (بارد أو سخّان معطّل)' } : { wire: 2, st: 'ok', t: `يقرأ ${v(0x14).toFixed(2)}V` });
   if (id === 'charging' && (volt || v(0x42))) {
-    if (volt) r.push({ wire: 0, st: live?.running ? (volt >= 13.5 && volt <= 14.8 ? 'ok' : 'bad') : volt >= 12.4 ? 'ok' : 'warn', t: `فولت القطعة (البطارية) ${volt.toFixed(2)}V` });
+    if (volt) r.push({ wire: 0, st: live?.running ? (volt >= charge.ok[0] && volt <= charge.ok[1] ? 'ok' : 'bad') : volt >= 12.4 ? 'ok' : 'warn', t: `فولت القطعة (البطارية) ${volt.toFixed(2)}V${live?.running && charge.rvc && volt < 13.4 ? ' — طبيعي لنظام RVC والبطارية مشحونة؛ تحقق تحت حِمل' : ''}` });
     if (volt && v(0x42)) { const d = Math.abs(volt - v(0x42)); r.push({ wire: 2, st: d > 0.5 ? 'warn' : 'ok', t: `فرق بين فولت البطارية وفولت الكمبيوتر ${d.toFixed(2)}V${d > 0.5 ? ' — هبوط جهد في التغذية/الأرضي' : ''}` }); }
   }
   if (id === 'lean' && v(0x07) != null) r.push({ wire: 4, st: Math.abs(v(0x07)) > 15 ? 'bad' : Math.abs(v(0x07)) > 8 ? 'warn' : 'ok', t: `تعديل طويل بنك1 ${v(0x07).toFixed(1)}%` });

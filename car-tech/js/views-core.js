@@ -18,6 +18,7 @@ export function dtcRow(code, kind, opts = {}) {
   return `<div class="dtc"><div class="dtc-code ${kc}">${esc(code)}</div><div class="dtc-body">
     <div class="dtc-title">${esc(d.text)}</div>
     <div class="row wrap small" style="gap:6px;margin-top:4px"><span class="badge">${kl}</span>${conf(d.conf)}<span class="dim">${esc(d.src)}</span>${sev === 'high' ? '<span class="badge err">أولوية عالية</span>' : ''}${opts.extra || ''}</div>
+    ${kind === 'perm' ? '<div class="small dim" style="margin-top:4px">«دائم»: تأكّد سابقًا ولا يُمسح بالجهاز — يزول وحده بعد أن يعيد الكمبيوتر اختباره وينجح.</div>' : ''}
     ${opts.ff || ''}
     <div class="btn-row" style="margin-top:6px"><a class="btn sm ghost" href="#/wiring?code=${code}">المخطط</a><a class="btn sm ghost" href="#/diag">التشخيص</a><a class="btn sm ghost" href="#/ai?q=${encodeURIComponent('اشرح الكود ' + code + ' وما السبب الأرجح في سيارتي')}">اسأل الفني</a></div>
   </div></div>`;
@@ -68,7 +69,7 @@ export function dashboard(c) {
     // readiness of all emission computers together (the first answering computer may be the TCM)
     const v = app.vehicle, dt = app.allDtcs(), rd = app.readinessAll(), rs = readinessStats(rd);
     const ecus = [...app.ecus.values()].filter(e => !e.ghost && e.status !== 'unreach');
-    const top = correlate({ dtcs: dt, live: app.liveValues(), trims: app.trims(), volt: app.conn.voltage, running: app.running(), displacement: vehDisplacement() })[0];
+    const top = correlate({ dtcs: dt, live: app.liveValues(), trims: app.trims(), volt: app.conn.voltage, running: app.running(), displacement: vehDisplacement(), charge: app.ctx().charge })[0];
     c.innerHTML = `
     ${connected() ? '' : connectCta()}
     <div class="grid g4" style="margin-top:${connected() ? 0 : 16}px">
@@ -82,7 +83,7 @@ export function dashboard(c) {
       <div class="card"><h3>الاتصال</h3><div class="kpi"><div class="v" style="font-size:20px">${esc({ on: 'متصل', off: 'غير متصل', connecting: 'جارٍ الاتصال', reconnecting: 'إعادة اتصال', adapter: 'القطعة فقط', err: 'خطأ' }[app.conn.state])}</div><div class="l">${esc(app.conn.transport?.name || '—')}</div></div>
         <div class="btn-row" style="margin-top:10px">${connected() ? '<button class="btn sm" id="dDisc">قطع الاتصال</button>' : '<a class="btn sm" href="#/connect">الاتصال</a>'}</div></div>
       <div class="card"><h3>فولت البطارية ${conf('sure')}</h3><div class="kpi"><div class="v" style="color:var(--cy)">${app.conn.voltage ? app.conn.voltage.toFixed(2) : '--.--'}<small class="g-unit"> V</small></div>
-        <div class="l">${app.conn.voltage ? (app.running() ? 'المكينة شغالة: الطبيعي 13.5–14.8V' : 'المكينة طافية: الطبيعي 12.4–12.7V') : 'يُقرأ من القطعة مباشرة'}</div></div></div>
+        <div class="l">${app.conn.voltage ? (app.running() ? (app.ctx().charge.rvc ? app.ctx().charge.note : 'المكينة شغالة: الطبيعي 13.5–14.8V') : 'المكينة طافية: الطبيعي 12.4–12.7V') : 'يُقرأ من القطعة مباشرة'}</div></div></div>
 
       <div class="card"><div class="kpi"><div class="v" style="color:${rd?.mil ? 'var(--rd)' : 'var(--gr)'}">${rd ? (rd.mil ? 'مضاءة' : 'مطفأة') : '—'}</div><div class="l">لمبة فحص المكينة (MIL)</div></div></div>
       <div class="card"><div class="kpi"><div class="v" style="color:${dt.length ? 'var(--rd)' : 'var(--gr)'}">${app.lastScan || dt.length ? dt.length : '—'}</div><div class="l">أعطال في كل الكمبيوترات</div></div></div>

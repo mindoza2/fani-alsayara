@@ -43,12 +43,22 @@ export function scanReportHtml(s, diag = []) {
     h += '<h2>لقطة الحظة</h2>';
     for (const f of s.freeze.filter(f => f.items?.length)) h += `<div class="card"><b>${esc(ecuName(f.ecu))}</b> — الكود المسبّب: ${f.dtc ? `<span class="mono">${esc(f.dtc)}</span>` : '<span class="dim">غير معروف (الكمبيوتر لم يذكره)</span>'}<table>${f.items.map(i => `<tr><td>${esc(i.name)}</td><td class="mono">${esc(i.text)} ${esc(i.unit || '')}</td></tr>`).join('')}</table></div>`;
   }
+  // the computer's own self-test results: failed tests, catalyst tests and misfire counters
+  const fmt = v => (v == null || !Number.isFinite(v) ? '—' : Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 1 ? v.toFixed(2) : v.toFixed(4));
+  const m6 = (s.mode06 || []).flatMap(m => (m.rows || []).map(r => ({ ...r, ecu: m.ecu })));
+  const m6show = m6.filter(r => !r.pass || (r.mid >= 0x21 && r.mid <= 0x24) || (r.mid >= 0xa2 && r.mid <= 0xad && r.value > 0));
+  if (m6show.length) {
+    h += '<h2>نتائج الاختبارات الذاتية (Mode 6)</h2><div class="card"><table><tr><th>الاختبار</th><th>القيمة</th><th>الحدود</th><th>النتيجة</th></tr>';
+    h += m6show.map(r => `<tr><td>${esc(r.midName)} <span class="dim">${esc(r.tidName)}${s.ecus?.some(e => e.key === 'std:' + r.ecu) && m6.some(x => x.ecu !== r.ecu) ? ' · ' + esc(ecuName(r.ecu)) : ''}</span></td><td class="mono">${fmt(r.value)} ${esc(r.unit || '')}</td><td class="mono dim">${fmt(r.min)} – ${fmt(r.max)}</td><td>${r.pass ? '<span class="ok">ناجح</span>' : '<span class="bad">راسب</span>'}</td></tr>`).join('');
+    h += '</table><div class="dim">تُعرض هنا الاختبارات الراسبة واختبارات الحفاز وعدّادات الاحتراق الناقص فقط. القيمة كما يحسبها الكمبيوتر — كلما اقتربت من الحد كان الهامش أضيق.</div></div>';
+  }
   if (diag.length) {
     h += '<h2>التشخيص الموجّه (ترجيح)</h2>';
     for (const d of diag.slice(0, 5)) h += `<div class="card"><b>${esc(d.title)}</b> <span class="tag">تقديري</span><div class="dim">${d.evidence.map(esc).join(' · ')}</div><ul>${d.causes.map(c => `<li>${esc(c.t)} — ${Math.round(c.p * 100)}%</li>`).join('')}</ul><ol>${d.steps.map(x => `<li>${esc(x.t)}<div class="dim">القياس: ${esc(x.m)} · المتوقع: ${esc(x.e)}</div></li>`).join('')}</ol></div>`;
   }
   const photos = (s.photos || []).filter(p => safeImg(p.data));
   if (photos.length) h += '<h2>صور موثّقة</h2>' + photos.map(p => `<div class="card"><img src="${safeImg(p.data)}" style="max-width:100%;border-radius:10px"><div>${esc(p.note || '')}</div></div>`).join('');
+  h += `<p class="dim">حالات الأكواد: «مخزّن» = عطل مؤكد الآن · «معلّق» = ظهر مرة وينتظر التأكيد · «دائم» = تأكّد سابقًا ولا يُمسح بالجهاز؛ يزول وحده بعد أن يعيد الكمبيوتر اختباره وينجح.</p>`;
   h += `<p class="dim">مستويات الثقة: «موثوق» = قراءة حية أو معيار OBD، «أفضل جهد» = مكتبة مرجعية/بروتوكول المصنّع، «تقديري» = ترجيح ذكي يحتاج تأكيد. مسح الأعطال لا يصلحها.</p></div></body></html>`;
   return h;
 }

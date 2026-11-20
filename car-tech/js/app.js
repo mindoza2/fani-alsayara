@@ -3,6 +3,7 @@ import { $, $$, esc, bus, toast, h } from './util.js';
 import { app, loadLibrary, fullScan, connectDemo, requireConn } from './core.js';
 import { settings } from './store.js';
 import { go, speak } from './nav.js';
+import { chargeRange } from './obd.js';
 import * as V1 from './views-core.js';
 import * as V2 from './views-live.js';
 import * as V3 from './views-tools.js';
@@ -72,8 +73,8 @@ function statusBar() {
   const vEl = $('#voltVal'), vDot = $('#voltChip .dot');
   bus.on('volt', v => {
     vEl.textContent = v == null ? '--.-' : v.toFixed(1);
-    const running = app.running();
-    vDot.className = 'dot ' + (v == null ? '' : running ? (v >= 13.3 && v <= 14.9 ? 'on' : 'err') : v >= 12.3 ? 'on' : v >= 11.9 ? 'busy' : 'err');
+    const running = app.running(), cr = chargeRange(app.vehicle); // GM RVC lowers charging on purpose
+    vDot.className = 'dot ' + (v == null ? '' : running ? (v >= cr.ok[0] && v <= cr.ok[1] ? 'on' : v >= cr.warn[0] && v <= cr.warn[1] ? 'busy' : 'err') : v >= 12.3 ? 'on' : v >= 11.9 ? 'busy' : 'err');
   });
   bus.on('demo', d => $('#demoFlag').classList.toggle('hidden', !d));
   const badges = () => {

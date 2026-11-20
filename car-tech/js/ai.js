@@ -4,6 +4,7 @@ import { store, settings } from './store.js';
 import { describeDtc } from './dtcdb.js';
 import { correlate } from './diag.js';
 import { uid } from './util.js';
+import { chargeRange } from './obd.js';
 
 const SYSTEM = `أنت «فني السيارة»: فني تشخيص سيارات خبير يتكلم العربية بوضوح وباختصار عملي.
 - استخدم بيانات السيارة المرفقة (أكواد الأعطال، الجاهزية، القيم الحية) كأدلة، واذكر أي دليل اعتمدت عليه.
@@ -28,6 +29,8 @@ export function buildContext(app) {
   const live = app.liveSnapshot?.();
   if (live?.length) lines.push('قيم حية: ' + live.map(x => `${x.name}=${x.text}${x.unit}`).join('، '));
   if (app.conn.voltage) lines.push(`فولت البطارية: ${app.conn.voltage.toFixed(2)}V`);
+  const cr = chargeRange(v);
+  if (cr.rvc) lines.push('نظام الشحن: ' + cr.note);
   return lines.join('\n');
 }
 export async function askClaude(q, ctx, history = []) {
@@ -73,11 +76,11 @@ export async function localAnswer(q, app) {
   }
   const nq = norm(q);
   if (/جاهزي|فحص دوري|readiness/.test(nq) && app.readinessSummary?.()) parts.push('الجاهزية الحالية: ' + app.readinessSummary());
-  if (/بطاري|فولت|شحن|دينمو/.test(nq) && app.conn.voltage) parts.push(`فولت البطارية الآن ${app.conn.voltage.toFixed(2)}V. الطبيعي: طافية 12.4–12.7V، شغالة 13.5–14.8V.`);
+  if (/بطاري|فولت|شحن|دينمو/.test(nq) && app.conn.voltage) { const cr = chargeRange(app.vehicle); parts.push(`فولت البطارية الآن ${app.conn.voltage.toFixed(2)}V. الطبيعي: طافية 12.4–12.7V، شغالة ${cr.rvc ? cr.note : '13.5–14.8V'}.`); }
   if (/اعطال|عطل|اكواد/.test(nq) && !codes.length) {
     const d = app.allDtcs();
     parts.push(d.length ? 'الأعطال المسجلة: ' + d.map(x => `${x.code} (${describeDtc(x.code).text})`).join('، ') : 'لا توجد أعطال مسجلة من آخر فحص.');
-    const cor = correlate({ dtcs: d, live: app.liveValues?.() || {}, trims: app.trims?.() });
+    const cor = correlate({ dtcs: d, live: app.liveValues?.() || {}, trims: app.trims?.(), charge: chargeRange(app.vehicle) });
     if (cor[0]) parts.push('الأرجح: ' + cor[0].title);
   }
   // saved library

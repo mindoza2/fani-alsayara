@@ -107,10 +107,12 @@ export function decodePid(pid, bytes) {
     return { value: typeof v === 'number' ? v : null, text: typeof v === 'number' ? v.toFixed(d[6] ?? 0) : v, unit: d[1] };
   } catch { return { value: null, text: bytes.map(hex2).join(' '), unit: '', raw: true }; }
 }
-// Health status of a value vs its normal range. ctx = {running, warm}
+// Health status of a value vs its normal range. ctx = {running, warm, charge}
 export function rangeStatus(pid, v, ctx = {}) {
-  const hl = PIDS[pid]?.[7];
+  let hl = PIDS[pid]?.[7];
   if (!hl || v == null) return { st: 'na' };
+  // the ECM's own voltage follows the charging strategy of the car (see chargeRange)
+  if (pid === 0x42 && ctx.charge?.rvc) hl = { ...hl, ok: [ctx.charge.ok[0] - 0.2, hl.ok[1]], warn: [ctx.charge.warn[0] - 0.2, hl.warn[1]] };
   if (hl.when === 'running' && !ctx.running) return { st: 'na', note: 'يُقيَّم والمكينة شغالة' };
   if (hl.when === 'warm' && !ctx.warm) return { st: 'na', note: 'يُقيَّم بعد تسخين المكينة' };
   if (v >= hl.ok[0] && v <= hl.ok[1]) return { st: 'ok', hl };
@@ -118,6 +120,16 @@ export function rangeStatus(pid, v, ctx = {}) {
   return { st: 'bad', hl };
 }
 export const VOLT_RANGES = { off: { ok: [12.4, 12.9], warn: [12.0, 13.1] }, running: { ok: [13.5, 14.8], warn: [13.0, 15.2] }, crank: { ok: [9.6, 13], warn: [9.0, 13] } };
+// Charging voltage expected with the engine running, for this vehicle. GM cars and trucks from 2007
+// use Regulated Voltage Control (RVC): with a charged battery and light loads the computer lowers
+// charging on purpose to about 12.6–13.1V ("fuel economy mode") and raises it under load — normal
+// operation, not a weak alternator. Elsewhere the classic 13.5–14.8V applies.
+export function chargeRange(v = {}) {
+  const rvc = v?.group === 'GM' && (+v?.year || 0) >= 2007;
+  return rvc
+    ? { ok: [12.6, 14.8], warn: [12.4, 15.2], rvc: true, note: 'جنرال موتورز (نظام RVC): 12.6–13.1V بدون أحمال والبطارية مشحونة طبيعي، وتحت حِمل (أنوار/مكيف/مروحة) يرتفع إلى ~13.9–14.5V' }
+    : { ok: [13.5, 14.8], warn: [13.0, 15.2], rvc: false, note: '' };
+}
 
 /* ------------------------------ DTCs ------------------------------ */
 export function dtcFromBytes(a, b) {

@@ -1,7 +1,7 @@
 // Live data, trip recorder / guided tests, predictive trends, phone sensors.
 import { $, $$, esc, bus, toast, conf, fmtDate, fmtTime, uid, sleep, linreg, download, shareFile, confirmAction, safeImg } from './util.js';
 import { app, startLive, stopLive, requireConn } from './core.js';
-import { PIDS, pidName, rangeStatus, VOLT_RANGES } from './obd.js';
+import { PIDS, pidName, rangeStatus, VOLT_RANGES, chargeRange } from './obd.js';
 import { pidGauge, updatePidGauge, drawChart, sparkline } from './widgets.js';
 import { trimAnalysis } from './diag.js';
 import { store, settings, saveSettings } from './store.js';
@@ -99,10 +99,10 @@ export function liveView(c) {
     }
     const vb = $('#lVolt', c);
     if (vb) {
-      const run = ctx.running, V = app.conn.voltage, r = run ? VOLT_RANGES.running : VOLT_RANGES.off;
+      const run = ctx.running, V = app.conn.voltage, r = run ? ctx.charge : VOLT_RANGES.off;
       vb.innerHTML = `<dl class="kv"><dt>فولت البطارية (من القطعة)</dt><dd class="num">${V ? V.toFixed(2) + ' V' : '—'} ${V ? (V >= r.ok[0] && V <= r.ok[1] ? '<span class="badge ok">طبيعي</span>' : '<span class="badge warn">خارج المعتاد</span>') : ''}</dd>
         ${vals[0x42] != null ? `<dt>فولت كمبيوتر المكينة</dt><dd class="num">${vals[0x42].toFixed(2)} V ${V ? `<span class="small dim">(الفرق ${Math.abs(V - vals[0x42]).toFixed(2)}V)</span>` : ''}</dd>` : ''}
-        <dt>المتوقع الآن</dt><dd>${run ? 'شغالة: 13.5–14.8V' : 'طافية: 12.4–12.7V'}</dd></dl><a class="btn sm" href="#/trip?test=crank" style="margin-top:6px">اختبار التدوير (Cranking)</a> <a class="btn sm" href="#/trip?test=charge" style="margin-top:6px">اختبار الشحن</a>`;
+        <dt>المتوقع الآن</dt><dd>${run ? (ctx.charge.rvc ? esc(ctx.charge.note) : 'شغالة: 13.5–14.8V') : 'طافية: 12.4–12.7V'}</dd></dl><a class="btn sm" href="#/trip?test=crank" style="margin-top:6px">اختبار التدوير (Cranking)</a> <a class="btn sm" href="#/trip?test=charge" style="margin-top:6px">اختبار الشحن</a>`;
     }
   };
   offs.push(bus.on('live', tick));
@@ -130,10 +130,14 @@ const TESTS = {
     ],
     verdict(s) {
       const out = []; let ok = true;
+      // GM RVC: with a charged battery and no load the computer keeps charging low on purpose; the load step is the real test
+      const cr = chargeRange(s.vehicle || app.vehicle), lowIdle = cr.rvc ? 12.6 : 13.4, low2k = cr.rvc ? 12.6 : 13.5;
+      const rvcOk = v => (cr.rvc && v < 13.4 ? 'طبيعي لنظام RVC والبطارية مشحونة' : null);
       if (s.rest != null) { const g = s.rest >= 12.4; ok &&= g; out.push(`البطارية طافية ${s.rest.toFixed(2)}V — ${s.rest >= 12.6 ? 'مشحونة' : s.rest >= 12.4 ? 'مقبولة' : 'ضعيفة/غير مشحونة'}`); }
-      if (s.idle != null) { const g = s.idle >= 13.4 && s.idle <= 14.9; ok &&= g; out.push(`على الخمول ${s.idle.toFixed(2)}V — ${g ? 'الدينمو يشحن' : 'خارج المعتاد'}`); }
-      if (s.rpm2000 != null) { const g = s.rpm2000 >= 13.5 && s.rpm2000 <= 14.9; ok &&= g; out.push(`على 2000 دورة ${s.rpm2000.toFixed(2)}V — ${g ? 'طبيعي' : s.rpm2000 > 14.9 ? 'شحن زائد (منظّم)' : 'شحن ضعيف'}`); }
+      if (s.idle != null) { const g = s.idle >= lowIdle && s.idle <= 14.9; ok &&= g; out.push(`على الخمول ${s.idle.toFixed(2)}V — ${g ? rvcOk(s.idle) || 'الدينمو يشحن' : 'خارج المعتاد'}`); }
+      if (s.rpm2000 != null) { const g = s.rpm2000 >= low2k && s.rpm2000 <= 14.9; ok &&= g; out.push(`على 2000 دورة ${s.rpm2000.toFixed(2)}V — ${g ? rvcOk(s.rpm2000) || 'طبيعي' : s.rpm2000 > 14.9 ? 'شحن زائد (منظّم)' : 'شحن ضعيف'}`); }
       if (s.load != null) { const g = s.load >= 13.2; ok &&= g; out.push(`مع الأحمال ${s.load.toFixed(2)}V — ${g ? 'الدينمو يتحمل الأحمال' : 'ينهار تحت الحِمل (دينمو/سير/أطراف)'}`); }
+      if (cr.rvc) out.push('سيارة جنرال موتورز بنظام RVC: الفولت المنخفض بدون أحمال طبيعي؛ الحكم الأهم خطوة الأحمال — لازم يرتفع الفولت فيها');
       return { ok, lines: out };
     },
   },
@@ -201,7 +205,7 @@ const TESTS = {
       lines.push(`أقصى حِمل ${maxL.toFixed(0)}% · أقصى دوران ${maxR.toFixed(0)}`);
       const hi = sm.filter(x => (x.load || 0) > 60); if (hi.length) { const t = hi.reduce((a, x) => a + (x.stft1 || 0) + (x.ltft1 || 0), 0) / hi.length; lines.push(`الخلطة تحت الحِمل العالي ${t.toFixed(1)}%`); if (t > 10) { ok = false; lines.push('فقيرة تحت الحِمل → ضغط الوقود/الطرمبة/الفلتر [تقديري]'); } }
       const ectMax = Math.max(...sm.map(x => x.ect || 0)); lines.push(`أعلى حرارة تبريد ${ectMax.toFixed(0)}°C`); if (ectMax > 108) { ok = false; lines.push('حرارة مرتفعة'); }
-      const vs = sm.map(x => x.volt).filter(Boolean); if (vs.length) { lines.push(`الفولت أثناء القيادة ${Math.min(...vs).toFixed(2)}–${Math.max(...vs).toFixed(2)}V`); if (Math.min(...vs) < 13.2) ok = false; }
+      const vs = sm.map(x => x.volt).filter(Boolean); if (vs.length) { const lo = chargeRange(app.vehicle).rvc ? 12.6 : 13.2; lines.push(`الفولت أثناء القيادة ${Math.min(...vs).toFixed(2)}–${Math.max(...vs).toFixed(2)}V`); if (Math.min(...vs) < lo) ok = false; }
       return { ok, lines };
     },
   },
@@ -394,7 +398,7 @@ export async function twinView(c) {
     ltft2: { n: 'متوسط خلطة الوقود بنك2 (%)', lim: [-15, 15], pts: [] },
     rest: { n: 'فولت البطارية طافية (V)', lim: [12.2, 99], pts: [] },
     crank: { n: 'أقل فولت أثناء التدوير (V)', lim: [9.6, 99], pts: [] },
-    run: { n: 'فولت الشحن (V)', lim: [13.4, 14.9], pts: [] },
+    run: { n: 'فولت الشحن (V)', lim: [chargeRange(app.vehicle).rvc ? 12.6 : 13.4, 14.9], pts: [] },
     ect: { n: 'أعلى حرارة تبريد (°C)', lim: [-99, 108], pts: [] },
     cat1: { n: 'هامش اختبار الحفاز بنك1 (% من الحد)', lim: [-99, 90], pts: [] },
     mis: { n: 'مجموع الاحتراق الناقص (Mode 6)', lim: [-1, 50], pts: [] },

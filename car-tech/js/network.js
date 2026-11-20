@@ -133,6 +133,9 @@ export class ModuleLayer {
       for (let i = 2; i + 2 < b.length; i += 3) out.push({ code: dtcFromBytes(b[i], b[i + 1]), status: b[i + 2], kind: (b[i + 2] & 0x60) === 0x60 ? 'stored' : 'pending', active: !!(b[i + 2] & 0x40) });
       return { proto: 'KWP2000', dtcs: out };
     }
+    const kwpErr = m?.neg ? m.nrc : null;
+    // both standard requests answered "service not supported": the module speaks the maker's own diagnostic set
+    if (udsErr === 0x11 && (kwpErr === 0x11 || kwpErr == null)) return { proto: null, dtcs: [], error: 'الكمبيوتر يرد لكنه رفض أوامر قراءة الأعطال القياسية (UDS 19 و KWP 18: «الخدمة غير مدعومة») — غالبًا يستخدم أمرًا خاصًا بالمصنّع (مثل GMLAN $A9 في جنرال موتورز) غير مدعوم في البرنامج حاليًا؛ أعطاله غير مقروءة وليس معناها أنه سليم' };
     return { proto: null, dtcs: [], error: udsErr ? `الكمبيوتر رفض قراءة الأعطال: ${nrcText(udsErr)}` : 'الكمبيوتر يرد لكن لا يدعم قراءة الأعطال بصيغة UDS/KWP عبر هذه القطعة (قد يستخدم بروتوكول المصنّع الخاص)' };
   }
   async clearDtcs(mod, proto) {

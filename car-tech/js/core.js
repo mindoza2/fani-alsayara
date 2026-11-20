@@ -2,7 +2,7 @@
 import { bus, uid, hex3, toast, sleep, withTimeout } from './util.js';
 import { Connection } from './elm.js';
 import { BleTransport, DemoTransport, bleSupport } from './transport.js';
-import { Obd, stdEcuName, decodeReadiness, combineReadiness, readinessStats, PIDS } from './obd.js';
+import { Obd, stdEcuName, decodeReadiness, combineReadiness, readinessStats, chargeRange, PIDS } from './obd.js';
 import { ModuleLayer, RANGES, moduleName } from './network.js';
 import { describeDtc, addLibraryCodes } from './dtcdb.js';
 import { trimAnalysis, addLibraryCircuits } from './diag.js';
@@ -41,7 +41,7 @@ export const app = {
   liveSnapshot() { return [...this.live.values()].filter(v => v.value != null).slice(0, 30).map(v => ({ name: PIDS[v.pid]?.[0] || v.pid, text: v.text, unit: v.unit })); },
   primaryEcu() { const k = [...this.pidSupport.keys()].sort(); return k.includes('7E8') ? '7E8' : k[0]; },
   running() { const v = this.liveValues(); return (v[0x0c] || 0) > 400; },
-  ctx() { const v = this.liveValues(); return { running: (v[0x0c] || 0) > 400, warm: (v[0x05] ?? 0) > 70 || (v[0x1f] || 0) > 600 }; },
+  ctx() { const v = this.liveValues(); return { running: (v[0x0c] || 0) > 400, warm: (v[0x05] ?? 0) > 70 || (v[0x1f] || 0) > 600, charge: chargeRange(this.vehicle) }; },
   trims() { return trimAnalysis(this.samples.slice(-600)); },
 };
 // Engine size of the car that is connected now (kept per vehicle: two cars must not share it).

@@ -2,7 +2,7 @@
 // AI technician, reports & history, settings.
 import { $, $$, esc, bus, toast, modal, confirmAction, conf, fmtDate, hex2, hex3, hex4, download, shareFile, uid, safeImg } from './util.js';
 import { app, requireConn, snapshotScan, startLive, stopLive, loadLibrary, exclusive, vehDisplacement } from './core.js';
-import { PIDS, pidName, combineReadiness, readinessStats } from './obd.js';
+import { PIDS, pidName, combineReadiness, readinessStats, chargeRange } from './obd.js';
 import { describeDtc } from './dtcdb.js';
 import { correlate, circuitFor, getCircuit, CIRCUIT_LIST, chainCheck } from './diag.js';
 import { wiringSvg, ROLE } from './widgets.js';
@@ -16,7 +16,7 @@ import { speak, canSpeak, params, go } from './nav.js';
 const connected = () => app.conn.ready;
 function diagCtx() {
   const m6 = app.mode06?.map ? [...app.mode06.map.values()].flat() : [];
-  return { dtcs: app.allDtcs(), live: app.liveValues(), trims: app.trims(), volt: app.conn.voltage, running: app.running(), mode06: m6, displacement: vehDisplacement() };
+  return { dtcs: app.allDtcs(), live: app.liveValues(), trims: app.trims(), volt: app.conn.voltage, running: app.running(), mode06: m6, displacement: vehDisplacement(), charge: app.ctx().charge };
 }
 
 /* =========================== Guided diagnosis =========================== */
@@ -212,7 +212,7 @@ export function wiringView(c) {
     const cir = getCircuit(id);
     const codes = [...new Set(app.allDtcs().map(d => d.code))];
     const live = { ...app.liveValues(), __volt: app.conn.voltage, running: app.running() };
-    const checks = cir ? chainCheck(id, live, app.conn.voltage) : [];
+    const checks = cir ? chainCheck(id, live, app.conn.voltage, app.ctx().charge) : [];
     c.innerHTML = `<div class="card" style="margin-bottom:14px"><div class="row wrap">
       <select id="wSel" style="width:auto">${CIRCUIT_LIST().map(k => `<option value="${k}" ${k === id ? 'selected' : ''}>${esc(getCircuit(k)?.title || k)}</option>`).join('')}</select>
       ${codes.length ? `<span class="small dim">من أعطال السيارة:</span>${codes.map(x => `<button class="btn sm ${circuitFor(x) === id ? 'primary' : ''}" data-code="${x}" ${circuitFor(x) ? '' : 'disabled title="لا يوجد مخطط لهذا الكود في المكتبة"'}>${x}</button>`).join('')}` : ''}
@@ -322,7 +322,7 @@ export async function reportsView(c) {
       <div class="card spanall"><h2>سجل الفحوصات (محفوظ على هذا الجهاز)</h2>${scans.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th></th><th>التاريخ</th><th>السيارة</th><th>الأعطال</th><th>الكمبيوترات</th><th></th></tr></thead><tbody>${scans.map(s => `<tr><td><input type="checkbox" data-pick="${esc(s.id)}" ${pick.includes(s.id) ? 'checked' : ''}></td><td>${fmtDate(s.t)}${s.demo ? ' <span class="badge vi">تجريبي</span>' : ''}</td><td>${esc([s.vehicle?.make, s.vehicle?.year].filter(Boolean).join(' ') || '—')} <span class="mono small dim">${esc(s.vehicle?.vin || '')}</span></td><td>${s.dtcs?.length ? `<span class="badge err">${s.dtcs.length}</span> <span class="small mono">${esc(s.dtcs.map(d => d.code).slice(0, 6).join(' '))}</span>` : '<span class="badge ok">0</span>'}</td><td class="num">${s.ecus?.length || 0}</td><td><button class="btn sm" data-rep="${esc(s.id)}">تقرير</button> <button class="btn sm ghost" data-del="${esc(s.id)}">حذف</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">لا توجد فحوصات محفوظة بعد. كل «فحص شامل» يُحفظ هنا تلقائيًا.</div>'}
       ${store.persistent ? '' : '<div class="warn" style="margin-top:8px">المتصفح يمنع التخزين الدائم (ربما وضع التصفح الخاص): السجل محفوظ لهذه الجلسة فقط.</div>'}
       <div class="small dim" style="margin-top:8px">المرحلة الأولى: التخزين محلي لكل جهاز. المزامنة بين الأجهزة غير متوفرة بعد — يمكنك نقل البيانات بتصدير نسخة احتياطية من الإعدادات.</div></div></div>`;
-    const make = async (rec) => { if ($('#rPh', c)?.checked) rec = { ...rec, photos: photos.filter(p => safeImg(p.data) && (!rec.vehicle?.vin || !p.vin || p.vin === rec.vehicle.vin)) }; return scanReportHtml(rec, correlate({ dtcs: rec.dtcs || [], live: rec.live || {}, trims: null, volt: rec.voltage })); };
+    const make = async (rec) => { if ($('#rPh', c)?.checked) rec = { ...rec, photos: photos.filter(p => safeImg(p.data) && (!rec.vehicle?.vin || !p.vin || p.vin === rec.vehicle.vin)) }; return scanReportHtml(rec, correlate({ dtcs: rec.dtcs || [], live: rec.live || {}, trims: null, volt: rec.voltage, mode06: (rec.mode06 || []).flatMap(m => m.rows || []), charge: chargeRange(rec.vehicle) })); };
     const cur = () => app.lastScan && app.lastScan.ecus ? { ...snapshotScan(), t: app.lastScan.t } : snapshotScan();
     $('#rNow', c).onclick = async () => shareFile(`car-report-${new Date().toISOString().slice(0, 10)}.html`, await make(cur()));
     $('#rDl', c).onclick = async () => download(`car-report-${new Date().toISOString().slice(0, 10)}.html`, await make(cur()));
