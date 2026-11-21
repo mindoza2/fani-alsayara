@@ -21,7 +21,7 @@ export function dtcRow(code, kind, opts = {}) {
     <div class="row wrap small" style="gap:6px;margin-top:4px"><span class="badge">${kl}</span>${conf(d.conf)}<span class="dim">${esc(d.src)}</span>${sev === 'high' ? '<span class="badge err">أولوية عالية</span>' : ''}${opts.extra || ''}</div>
     ${kind === 'perm' ? '<div class="small dim" style="margin-top:4px">«دائم»: تأكّد سابقًا ولا يُمسح بالجهاز — يزول وحده بعد أن يعيد الكمبيوتر اختباره وينجح.</div>' : ''}
     ${opts.ff || ''}
-    <div class="btn-row" style="margin-top:6px"><a class="btn sm ghost" href="#/wiring?code=${code}">المخطط</a><a class="btn sm ghost" href="#/diag">التشخيص</a><a class="btn sm ghost" href="#/ai?q=${encodeURIComponent('اشرح الكود ' + code + ' وما السبب الأرجح في سيارتي')}">اسأل الفني</a></div>
+    <div class="btn-row" style="margin-top:6px"><a class="btn sm ghost" href="#/wiring?code=${code}">المخطط</a><a class="btn sm ghost" href="#/diag?code=${code}">حلّل العطل</a><a class="btn sm ghost" href="#/ai?q=${encodeURIComponent('اشرح الكود ' + code + ' وما السبب الأرجح في سيارتي')}">اسأل الفني</a></div>
   </div></div>`;
 }
 const connected = () => app.conn.ready;
@@ -167,6 +167,9 @@ export function connectView(c) {
       <div class="grid g3" style="gap:8px"><div><label class="f">الشركة</label><input type="text" id="vMake" value="${esc(v.make || '')}" list="makes"></div><div><label class="f">الطراز</label><input type="text" id="vModel" value="${esc(v.model || '')}"></div><div><label class="f">السنة</label><input type="number" id="vYear" value="${esc(v.year || '')}"></div></div>
       <datalist id="makes">${['Chevrolet', 'GMC', 'Cadillac', 'Ford', 'Toyota', 'Lexus', 'Nissan', 'Hyundai', 'Kia', 'Honda', 'Mazda', 'Mitsubishi', 'BMW', 'Mercedes-Benz', 'Volkswagen', 'Audi', 'Jeep', 'Dodge', 'Ram'].map(m => `<option value="${m}">`).join('')}</datalist>
       <div class="grid g2" style="gap:8px"><div><label class="f">المكينة (وصف)</label><input type="text" id="vEng" value="${esc(v.engine || '')}" placeholder="مثال: V8 6.2L"></div><div><label class="f">سعة المكينة (لتر) — للتقديرات</label><input type="number" step="0.1" id="vDisp" value="${esc(vehDisplacement() || '')}"></div></div>
+      <label class="f" style="margin-top:10px">تعديلات على السيارة <span class="dim small">(تغيّر ترجيح أسباب الأعطال في «محلّل الأعطال»)</span></label>
+      <div class="row wrap small" style="gap:6px 14px">${[['mSwap', 'swap', 'المكينة مركّبة (سواب)'], ['mTune', 'tune', 'برمجة الكمبيوتر معدّلة (تيون)'], ['mAfm', 'afmOff', 'بدون نظام AFM'], ['mO2', 'rearO2Off', 'الحساسات/الدبات الخلفية ملغاة'], ['mAbs', 'absKill', 'فيها قاطع ABS']].map(([id, k, t]) => `<label class="chk"><input type="checkbox" id="${id}" ${v.mods?.[k] ? 'checked' : ''}> ${t}</label>`).join('')}</div>
+      <input type="text" id="mNotes" value="${esc(v.mods?.notes || '')}" placeholder="ملاحظات: مثال مكينة LS3 6.2، الكمبيوتر مقفول على التيونر" style="margin-top:6px">
       <div class="btn-row" style="margin-top:12px"><button class="btn primary" id="vSave">حفظ</button>${connected() ? '<button class="btn" id="vAuto">قراءة VIN تلقائيًا</button>' : ''}</div>
       <div id="vInfo" class="small" style="margin-top:8px"></div>
     </div>
@@ -187,7 +190,7 @@ export function connectView(c) {
       const { saveSettings } = await import('./store.js');
       saveSettings({ displacement: disp });
       // the engine size belongs to this car (saved with its VIN), not to every car
-      setVehicle({ vin: vin || undefined, make: $('#vMake', c).value.trim() || undefined, model: $('#vModel', c).value.trim() || undefined, year: parseInt($('#vYear', c).value) || undefined, engine: $('#vEng', c).value.trim() || undefined, displacement: disp, source: vin && vin === app.vehicle.vin && app.vehicle.source === 'auto' ? 'auto' : 'manual' });
+      setVehicle({ vin: vin || undefined, make: $('#vMake', c).value.trim() || undefined, model: $('#vModel', c).value.trim() || undefined, year: parseInt($('#vYear', c).value) || undefined, engine: $('#vEng', c).value.trim() || undefined, displacement: disp, mods: { swap: $('#mSwap', c).checked, tune: $('#mTune', c).checked, afmOff: $('#mAfm', c).checked, rearO2Off: $('#mO2', c).checked, absKill: $('#mAbs', c).checked, notes: $('#mNotes', c).value.trim() }, source: vin && vin === app.vehicle.vin && app.vehicle.source === 'auto' ? 'auto' : 'manual' });
       toast('تم حفظ بيانات السيارة', 'ok'); draw();
     };
     $('#vAuto', c)?.addEventListener('click', async () => { try { const vin = await readVinNow(); toast(vin ? 'VIN: ' + vin : 'السيارة لم ترسل رقم الهيكل عبر Mode 09', vin ? 'ok' : 'warn'); } catch (e) { toast(e.message, 'err'); } draw(); });

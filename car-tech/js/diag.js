@@ -111,7 +111,8 @@ export function correlate(ctx) {
     steps: [{ t: 'نفّذ «اختبار التشغيل Cranking» و«اختبار الشحن» من مسجّل المشوار', m: 'فولت البطارية', e: `طافية 12.4–12.7V، أقل فولت أثناء التدوير > 9.6V، شغالة ${cr.ok[0]}–${cr.ok[1]}V${cr.rvc ? ' (ومع الأحمال يرتفع ~13.9–14.5V)' : ''}` }, { t: 'قِس فرق الجهد بين سالب البطارية وجسم المكينة أثناء التدوير', m: 'فرق جهد الأرضي', e: 'أقل من 0.3V' }],
   });
   const ref5 = has(codes, /^P0641|^P0651|^P0697|^P06A6/);
-  const lowIn = has(codes, /^P0(107|112|117|122|222|452|462|522|532|192|342|337)$/);
+  // sensors fed by a 5V reference (thermistors like ECT/IAT are not: their "low" is a short to ground)
+  const lowIn = has(codes, /^P0(107|122|222|452|462|522|532|192|342|337)$/);
   if (ref5.length || lowIn.length >= 2) add({
     title: 'عدة حساسات تشترك في مرجع 5 فولت', codes: ref5.concat(lowIn), circuit: 'ref5', score: 0.8,
     causes: [{ t: 'تماس في سلك 5V المرجعي في أحد الحساسات المشتركة', p: 0.6 }, { t: 'حساس واحد تالف يسحب المرجع', p: 0.3 }, { t: 'الكمبيوتر', p: 0.1 }],

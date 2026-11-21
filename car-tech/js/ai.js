@@ -5,12 +5,15 @@ import { describeDtc } from './dtcdb.js';
 import { correlate } from './diag.js';
 import { uid } from './util.js';
 import { chargeRange } from './obd.js';
+import { analyze, analysisCtx, analysisText } from './analyst.js';
 
-const SYSTEM = `أنت «فني السيارة»: فني تشخيص سيارات خبير يتكلم العربية بوضوح وباختصار عملي.
-- استخدم بيانات السيارة المرفقة (أكواد الأعطال، الجاهزية، القيم الحية) كأدلة، واذكر أي دليل اعتمدت عليه.
-- رجّح السبب الجذري بدل شرح كل كود منفصلًا، وأعطِ خطوات فحص مرتّبة مع نقطة القياس والقيمة المتوقعة.
-- فرّق بوضوح بين المؤكَّد والتقديري، ولا تخترع أرقام أطراف أو ألوان أسلاك؛ إن لم تكن متأكدًا قل ذلك.
-- نبّه على السلامة (الوسائد الهوائية، الوقود، المراوح، الفولت العالي في الهجين).
+const SYSTEM = `أنت «فني السيارة»: مختص تشخيص سيارات يجمع ثلاث خبرات: ميكانيكي، وكهربائي سيارات، ومبرمج كمبيوترات سيارات. تتكلم العربية بوضوح وباختصار عملي.
+- استخدم بيانات السيارة المرفقة (الأعطال، الجاهزية، القيم الحية، تحليل المحلّل، ودائرة كل عطل من مخطط السيارة) كأدلة، واذكر الدليل اللي اعتمدت عليه.
+- لكل عطل: حدّد السبب الجذري ومن أي زاوية هو (كهرباء / ميكانيك / برمجة / تعديل بالسيارة)، واشرح ليش، ورجّح بدل ما تشرح كل كود لحاله.
+- استخدم أسماء الأسلاك والفيوزات ونقاط الأرضي الموجودة في «الدائرة» كما هي، ولا تخترع أرقام أطراف أو ألوان غير المذكورة؛ إذا ما تعرف قل ذلك.
+- انتبه لتعديلات السيارة (سواب المكينة، التيون، الأنظمة الملغاة، القواطع): كثير من الأكواد بعدها سببها البرمجة أو التعديل وليس قطعة تالفة.
+- أعطِ خطوات فحص مرتبة من الأرخص والأسهل، مع نقطة القياس والقيمة المتوقعة ومعنى كل نتيجة.
+- نبّه على السلامة (الوسائد الهوائية، الوقود، المراوح، ضغط الزيت المنخفض، الفولت العالي في الهجين).
 - مسح لمبة التحذير لا يصلح العطل.`;
 
 export function aiAvailable() {
@@ -31,6 +34,8 @@ export function buildContext(app) {
   if (app.conn.voltage) lines.push(`فولت البطارية: ${app.conn.voltage.toFixed(2)}V`);
   const cr = chargeRange(v);
   if (cr.rvc) lines.push('نظام الشحن: ' + cr.note);
+  // the analyst's findings, with each fault's circuit from the car's own wiring
+  try { const t = analysisText(analyze(analysisCtx(app))); if (t) lines.push('تحليل المحلّل (ترجيحي):\n' + t); } catch (e) { console.warn(e); }
   return lines.join('\n');
 }
 export async function askClaude(q, ctx, history = []) {
@@ -42,7 +47,7 @@ export async function askClaude(q, ctx, history = []) {
     const r = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST', signal: ctl.signal,
       headers: { 'content-type': 'application/json', 'x-api-key': s.apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-      body: JSON.stringify({ model: s.model, max_tokens: 1600, system: SYSTEM, messages }),
+      body: JSON.stringify({ model: s.model, max_tokens: 2500, system: SYSTEM, messages }),
     });
     if (!r.ok) {
       let msg = `HTTP ${r.status}`;

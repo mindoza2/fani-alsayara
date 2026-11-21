@@ -209,6 +209,16 @@ details.acc .acc-body{padding:4px 14px 14px;border-top:1px solid var(--line)}
 .wref-it{border:1px solid var(--line);border-radius:12px;padding:10px 12px;background:rgba(120,170,255,.03);display:flex;flex-direction:column;gap:4px}
 .wref-it .h{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .swipe-hint{display:none;margin-bottom:6px}
+/* ---------- fault analyst ---------- */
+.area-bar{display:flex;height:6px;border-radius:99px;overflow:hidden;background:rgba(120,170,255,.08)}
+.area-bar i{display:block;height:100%}
+.path{padding-inline-start:18px}.path li{margin:4px 0}
+.run-step{border:1px solid var(--line2);border-radius:12px;padding:10px 12px;background:rgba(61,224,255,.05)}
+.run-live{display:flex;gap:18px;flex-wrap:wrap;margin:6px 0}.run-live .big{font-size:22px}
+.run-hist{padding-inline-start:18px;margin:0 0 8px}.run-hist li{margin:2px 0}
+.err-t{color:#ff5468}.ok-t{color:#33e39b}
+.verdict{border:1px solid;border-radius:12px;padding:10px 12px;background:rgba(120,170,255,.04)}
+label.chk{display:inline-flex;align-items:center;gap:6px;cursor:pointer}
 @media (max-width:700px){.wiring #wSvg{overflow-x:auto;-webkit-overflow-scrolling:touch}.wiring #wSvg svg{min-width:680px}.swipe-hint{display:block}}
 .wire{cursor:pointer}
 .wire:hover path{stroke-width:6}

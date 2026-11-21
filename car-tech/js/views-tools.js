@@ -1,9 +1,9 @@
-// Phase-2 screens: guided diagnosis, services & bidirectional control (wiring diagrams live in
-// views-wiring.js),
+// Phase-2 screens: services & bidirectional control (the fault analyst lives in views-analyst.js,
+// wiring diagrams in views-wiring.js),
 // AI technician, reports & history, settings.
 import { $, $$, esc, toast, modal, confirmAction, conf, fmtDate, hex2, hex3, hex4, download, shareFile, uid, safeImg } from './util.js';
-import { app, requireConn, snapshotScan, startLive, stopLive, loadLibrary, exclusive, vehDisplacement } from './core.js';
-import { pidName, combineReadiness, readinessStats, chargeRange } from './obd.js';
+import { app, requireConn, snapshotScan, loadLibrary, exclusive } from './core.js';
+import { combineReadiness, readinessStats, chargeRange } from './obd.js';
 import { describeDtc } from './dtcdb.js';
 import { correlate } from './diag.js';
 import { SIDS, STD_DIDS, routineBlocked, nrcText } from './network.js';
@@ -14,39 +14,6 @@ import { clearOne } from './views-core.js';
 import { speak, canSpeak, params, go } from './nav.js';
 
 const connected = () => app.conn.ready;
-function diagCtx() {
-  const m6 = app.mode06?.map ? [...app.mode06.map.values()].flat() : [];
-  return { dtcs: app.allDtcs(), live: app.liveValues(), trims: app.trims(), volt: app.conn.voltage, running: app.running(), mode06: m6, displacement: vehDisplacement(), charge: app.ctx().charge };
-}
-
-/* =========================== Guided diagnosis =========================== */
-export function diagView(c) {
-  const draw = () => {
-    const list = correlate(diagCtx());
-    const dt = app.allDtcs();
-    c.innerHTML = `<div class="card glow"><div class="card-head"><h2>التشخيص الموجّه وربط الأعطال</h2><span class="sp"></span>${connected() ? '<button class="btn" id="gLive">إضافة قراءات حية للتحليل</button>' : ''}<a class="btn" href="#/scan">فحص جديد</a></div>
-      <div class="small muted">المحرّك يربط الأعطال ببعضها مع القيم الحية ونتائج الاختبارات الذاتية، ويرجّح السبب الجذري بدل شرح كل كود لحاله. النسب ترجيحية ${conf('est')} وتتحسّن مع البيانات (سجّل «اختبار خلطة الوقود» مثلًا).</div>
-      <div class="row wrap small" style="margin-top:8px;gap:6px"><span class="badge">${dt.length} عطل</span><span class="badge">${app.samples.length} عينة حية</span>${app.mode06?.map?.size ? '<span class="badge ok">نتائج Mode 6 متوفرة</span>' : ''}${app.conn.voltage ? `<span class="badge">فولت ${app.conn.voltage.toFixed(1)}V</span>` : ''}</div></div>
-      ${list.length ? list.map((d, i) => `<div class="card ${i === 0 ? 'raised' : ''}" style="margin-top:14px"><div class="card-head"><span class="badge ${i === 0 ? 'err' : ''}">#${i + 1}</span><h2>${esc(d.title)}</h2>${conf(d.conf)}${d.safety ? '<span class="badge err">سلامة</span>' : ''}${d.early ? '<span class="badge warn">تحذير مبكر</span>' : ''}<span class="sp"></span>${d.codes.map(x => `<span class="badge mono">${esc(x)}</span>`).join('')}</div>
-        <div class="grid g2"><div><h3>الأسباب المرجّحة</h3>${d.causes.map(x => `<div class="row small" style="margin:6px 0"><span style="flex:1">${esc(x.t)}</span><div class="bar" style="width:120px"><i style="width:${Math.round(x.p * 100)}%"></i></div><span class="num" style="width:40px">${Math.round(x.p * 100)}%</span></div>`).join('')}
-          <h3 style="margin-top:12px">الأدلة</h3><ul class="small">${d.evidence.map(e => `<li>${esc(e)}</li>`).join('')}</ul></div>
-          <div><h3>خطوات الفحص ونقاط القياس</h3><ol class="small" style="padding-inline-start:18px">${d.steps.map(s => `<li style="margin-bottom:8px">${esc(s.t)}<div class="dim">📍 القياس: ${esc(s.m)} · ✓ المتوقع: ${esc(s.e)}</div></li>`).join('')}</ol>
-          <div class="btn-row">${d.circuit ? `<a class="btn sm" href="#/wiring?c=${d.circuit}${d.codes[0] ? '&code=' + d.codes[0] : ''}">المخطط الكهربائي</a>` : ''}<a class="btn sm" href="#/ai?q=${encodeURIComponent('ساعدني في تشخيص: ' + d.title + ' — الأكواد ' + d.codes.join(' '))}">اسأل الفني</a></div></div></div></div>`).join('')
-      : `<div class="card" style="margin-top:14px"><div class="empty"><div class="big">✦</div>${app.lastScan ? 'لا توجد أعطال أو قيم غير طبيعية تستدعي التشخيص.' : 'شغّل الفحص الشامل أولًا ليبدأ التحليل.'}</div></div>`}`;
-    $('#gLive', c)?.addEventListener('click', e => {
-      const b = e.currentTarget; if (b.disabled) return;
-      const sup = app.pidSupport.get(app.primaryEcu()) || new Set();
-      const pids = [0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0c, 0x10, 0x0b, 0x14, 0x42].filter(p => sup.has(p));
-      if (!pids.length) { toast('الكمبيوتر لم يعلن عن القيم المطلوبة للتحليل — شغّل الفحص الشامل أولًا', 'warn'); return; }
-      b.disabled = true; b.innerHTML = '<span class="spin"></span> 12 ثانية';
-      const tok = startLive({ fast: pids, rateMs: 300 });
-      // stops only its own polling, and only redraws if this page is still the one on screen
-      setTimeout(() => { stopLive(tok); if (c.isConnected) { draw(); toast('أُضيفت قراءات حية للتحليل', 'ok'); } }, 12000);
-    });
-  };
-  draw();
-  return () => stopLive();
-}
 
 /* =========================== Services & bidirectional =========================== */
 export function servicesView(c) {
