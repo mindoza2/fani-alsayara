@@ -1,7 +1,7 @@
 // Local storage on this device only (phase 1). IndexedDB for records, localStorage for settings.
 // If the browser blocks IndexedDB (some private modes), records are kept in memory for this
 // session only — and `store.persistent` says so, so the UI can tell the person honestly.
-const DB = 'car-tech', VER = 1, STORES = ['scans', 'trips', 'ai', 'photos', 'vehicles', 'library'];
+const DB = 'car-tech', VER = 2, STORES = ['scans', 'trips', 'ai', 'photos', 'vehicles', 'library', 'sessions'];
 let dbp = null;
 const mem = Object.fromEntries(STORES.map(s => [s, new Map()]));
 function db() {

@@ -219,6 +219,13 @@ details.acc .acc-body{padding:4px 14px 14px;border-top:1px solid var(--line)}
 .err-t{color:#ff5468}.ok-t{color:#33e39b}
 .verdict{border:1px solid;border-radius:12px;padding:10px 12px;background:rgba(120,170,255,.04)}
 label.chk{display:inline-flex;align-items:center;gap:6px;cursor:pointer}
+/* ---------- session recording ---------- */
+.rec-chip{cursor:pointer;gap:6px}.rec-chip .dot{animation:recblink 1.2s infinite}
+@keyframes recblink{50%{opacity:.25}}
+@media (max-width:700px){.rec-chip span:nth-child(2){display:none}.stat-chip,.conn-chip{padding:5px 8px;gap:4px}.top-status{gap:5px}.rec-chip .num{font-size:12px}.top-status #connText{display:inline-block;max-width:54px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle}.page-title{min-width:48px}}
+.rep-viewer{position:fixed;inset:0;z-index:200;background:#0a101a;display:flex;flex-direction:column}
+.rep-bar{display:flex;align-items:center;gap:8px;padding:10px 12px;padding-top:max(10px,env(safe-area-inset-top));border-bottom:1px solid var(--line)}
+.rep-viewer iframe{flex:1;border:0;width:100%;background:#0a101a}
 @media (max-width:700px){.wiring #wSvg{overflow-x:auto;-webkit-overflow-scrolling:touch}.wiring #wSvg svg{min-width:680px}.swipe-hint{display:block}}
 .wire{cursor:pointer}
 .wire:hover path{stroke-width:6}

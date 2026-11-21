@@ -64,7 +64,8 @@ export function scanReportHtml(s, diag = []) {
 }
 export function tripReportHtml(t) {
   let h = head('تقرير ' + (t.name || 'المشوار'), t.demo) + vehicle(t.vehicle);
-  h += `<div class="card">التاريخ: ${fmtDate(t.t)} · المدة: ${fmtTime(t.dur || 0)} · عدد العينات: ${t.samples?.length || 0}</div>`;
+  if (t.partial) h += '<div class="demo">⚠ تسجيل غير مكتمل: حُفظ تلقائيًا قبل الإنهاء (قفل الشاشة أو إغلاق الصفحة أو انقطاع الاتصال). المعروض هو ما سُجّل حتى تلك اللحظة.</div>';
+  h += `<div class="card">التاريخ: ${fmtDate(t.t)} · المدة: ${fmtTime(t.dur || 0)} · عدد العينات: ${t.samples?.length || 0}${t.raw?.rows ? ` · قراءات كاملة في ملف CSV: ${t.raw.rows.length}` : ''}</div>`;
   if (t.verdict) h += `<h2>النتيجة</h2><div class="card"><b class="${t.verdict.ok ? 'ok' : 'warn'}">${t.verdict.ok ? 'سليم' : 'يحتاج انتباه'}</b><ul>${t.verdict.lines.map(l => `<li>${esc(l)}</li>`).join('')}</ul><div class="dim">مبنية على القراءات المسجّلة (أفضل جهد)</div></div>`;
   h += `<h2>الخط الزمني</h2><div class="card"><table>${(t.events || []).map(e => `<tr><td class="mono">${fmtTime(e.t - t.t)}</td><td class="${e.kind === 'bad' ? 'bad' : e.kind === 'warn' ? 'warn' : ''}">${esc(e.text)}</td></tr>`).join('')}</table></div>`;
   const sm = t.samples || [];

@@ -56,6 +56,7 @@ export const bus = {
 };
 
 export function toast(msg, kind = '') {
+  bus.emit('toast', { msg, kind }); // the session recorder keeps every message
   const box = $('#toasts');
   const t = h(`<div class="toast ${kind}">${esc(msg)}</div>`);
   box.appendChild(t);
@@ -107,22 +108,45 @@ export async function confirmAction({ title, what, reversible, extra = '', dange
   return r === true;
 }
 
-export function download(name, content, type = 'text/html') {
+// Saving files. iPhone/iPad browsers built on WebKit's in-app view (Bluefy and others) ignore
+// "download" links to in-memory files, so there the share sheet is used (→ «حفظ في الملفات»).
+// Results: 'shared' | 'cancelled' | 'downloaded' — callers report what really happened.
+const IOS = typeof navigator !== 'undefined' && (/iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1));
+async function viaShareSheet(name, content, type) {
+  let file;
+  try { file = new File([content], name, { type }); } catch { return null; }
+  if (!(navigator.canShare && navigator.canShare({ files: [file] }))) return null;
+  try { await navigator.share({ files: [file], title: name }); return 'shared'; }
+  catch (e) { return e.name === 'AbortError' ? 'cancelled' : null; }
+}
+function viaLink(href, name) { const a = document.createElement('a'); a.href = href; a.download = name; document.body.appendChild(a); a.click(); a.remove(); }
+export async function download(name, content, type = 'text/html') {
   const blob = content instanceof Blob ? content : new Blob([content], { type: type + ';charset=utf-8' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = name;
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  if (IOS) {
+    const r = await viaShareSheet(name, content, type);
+    if (r) return r;
+    // no share sheet: a data: link is the form those in-app views do accept
+    const url = await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = () => res(null); fr.readAsDataURL(blob); });
+    if (url) { viaLink(url, name); return 'downloaded'; }
+  }
+  const href = URL.createObjectURL(blob);
+  viaLink(href, name);
+  setTimeout(() => URL.revokeObjectURL(href), 4000);
+  return 'downloaded';
+}
+export async function shareFile(name, content, type = 'text/html') {
+  const r = await viaShareSheet(name, content, type);
+  return r || download(name, content, type);
 }
 
-export async function shareFile(name, content, type = 'text/html') {
-  const file = new File([content], name, { type });
-  if (navigator.canShare && navigator.canShare({ files: [file] })) {
-    try { await navigator.share({ files: [file], title: name }); return true; } catch (e) { if (e.name === 'AbortError') return true; }
-  }
-  download(name, content, type);
-  return false;
+// Keep the screen on while something is being recorded (a locked phone suspends the page and the
+// Bluetooth link). Uses the Screen Wake Lock API where the browser offers it.
+export function keepAwake() {
+  let lock = null, on = true;
+  const get = async () => { try { if (on && document.visibilityState === 'visible' && navigator.wakeLock) lock = await navigator.wakeLock.request('screen'); } catch {} };
+  const vis = () => { if (document.visibilityState === 'visible') get(); };
+  get(); document.addEventListener('visibilitychange', vis);
+  return { supported: !!navigator.wakeLock, release: () => { on = false; document.removeEventListener('visibilitychange', vis); try { lock?.release()?.catch?.(() => {}); } catch {} lock = null; } };
 }
 
 // Linear regression → {slope, intercept, r2}

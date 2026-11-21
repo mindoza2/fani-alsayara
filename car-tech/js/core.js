@@ -426,11 +426,13 @@ export const rereadVerified = e => exclusive('إعادة القراءة', () => 
 // link is being re-established, and resumes afterwards — so values never freeze after a reconnect.
 let liveRun = null;
 export function liveRunning() { return !!liveRun; }
+export function liveToken() { return liveRun; }
 export function startLive({ fast = [], slow = [], onTick = () => {}, rateMs = 0 } = {}) {
   stopLive();
   const token = { stop: false };
   liveRun = token;
-  const all = [...new Set([...fast, ...slow])];
+  // while a session is being recorded, every poll also reads the car's other values now and then
+  const all = [...new Set([...fast, ...slow, ...(app.liveExtra?.() || [])])];
   (async () => {
     let n = 0;
     while (!token.stop) {

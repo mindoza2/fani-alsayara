@@ -62,6 +62,7 @@ export function diagView(c) {
     if (!node) { box.innerHTML = `${hist}<div class="hint small">انتهى الفحص هنا — ارجع له لاحقًا لما تتوفر الظروف المطلوبة.</div><div class="btn-row"><button class="btn sm" data-restart>أعد من البداية</button></div>`; wireRun(i, null); return; }
     if (node.k === 'end') {
       const v = node.verdict;
+      if (!st.reported) { st.reported = true; bus.emit('analyst', { title: it.title, codes: it.codes, verdict: v.t, fix: v.fix, area: v.area, steps: st.hist.map(h => `${h.t} → ${h.num ? h.num + ' — ' : ''}${h.r}`) }); }
       box.innerHTML = `${hist}<div class="verdict" style="border-color:${AREA[v.area][1]}"><div class="row">${areaBadge(v.area)}<b>النتيجة</b></div><div style="margin-top:6px">${esc(v.t)}</div><div class="small" style="margin-top:6px">🔧 الإصلاح: ${esc(v.fix)}</div></div>
         <div class="btn-row" style="margin-top:8px">${st.hist.length ? '<button class="btn sm ghost" data-back>رجوع خطوة</button>' : ''}<button class="btn sm" data-restart>أعد الفحص</button></div>`;
       wireRun(i, node); return;

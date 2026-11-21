@@ -1,7 +1,7 @@
 // Shell: navigation, responsive layout, status bar, router, voice control.
-import { $, $$, esc, bus, toast, h } from './util.js';
+import { $, $$, esc, bus, toast, h, modal, shareFile } from './util.js';
 import { app, loadLibrary, fullScan, connectDemo, requireConn } from './core.js';
-import { settings } from './store.js';
+import { settings, store } from './store.js';
 import { go, speak } from './nav.js';
 import { chargeRange } from './obd.js';
 import * as V1 from './views-core.js';
@@ -9,6 +9,8 @@ import * as V2 from './views-live.js';
 import * as V3 from './views-tools.js';
 import * as V4 from './views-wiring.js';
 import * as V5 from './views-analyst.js';
+import { initSession, session } from './session.js';
+import { sessionReportHtml, openReport } from './session-report.js';
 
 export const ROUTES = [
   { id: 'dash', ic: '◉', t: 'لوحة القيادة', g: 'الأساس', v: V1.dashboard },
@@ -93,6 +95,29 @@ function statusBar() {
     bb.querySelector('span').textContent = `${b.label}${b.p ? ' — ' + Math.round(b.p * 100) + '%' : ''}${b.t ? ' · ' + b.t : ''}`;
   };
   bus.on('scan', busy); bus.on('progress', busy);
+  // automatic session recording: a chip while it records, the report as soon as it ends
+  const chip2 = document.createElement('button');
+  chip2.className = 'stat-chip rec-chip hidden'; chip2.id = 'recChip'; chip2.title = 'تسجيل الجلسة — يطلع التقرير لما تفصل القطعة';
+  chip2.innerHTML = '<span class="dot err"></span><span>تسجيل</span><span class="num" id="recTime">00:00</span>';
+  $('#connChip').before(chip2);
+  chip2.onclick = () => go('reports');
+  const clock = ms => { const s = Math.floor(ms / 1000); return `${s >= 3600 ? Math.floor(s / 3600) + ':' : ''}${String(Math.floor(s % 3600 / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`; };
+  bus.on('session', async ({ state, id, recovered }) => {
+    const r0 = session.rec;
+    chip2.classList.toggle('hidden', !r0);
+    if (r0) $('#recTime').textContent = clock(Date.now() - r0.t);
+    if (state !== 'done') return;
+    const r = await store.get('sessions', id).catch(() => null);
+    if (!r) return;
+    const html = sessionReportHtml(r);
+    const name = `car-session-${new Date(r.t).toISOString().slice(0, 16).replace(/[:T]/g, '-')}.html`;
+    const nCodes = Object.keys(r.codes || {}).length, nVals = (r.stats?.series || []).length;
+    const pick = await modal(recovered ? 'تقرير الجلسة السابقة جاهز' : 'تقرير الجلسة جاهز',
+      `<p>سجّلت ${clock((r.tEnd || r.t) - r.t)} من أول فحص لين ${esc(r.endedBy || 'النهاية')}: ${nVals} قيمة حية، ${nCodes} كود، ${(r.events || []).length} حدث${r.stats?.dist ? `، ${r.stats.dist.toFixed(1)} km` : ''}.</p><p class="small dim">التقرير محفوظ في «التقارير والسجل».</p>`,
+      [{ label: 'اعرض التقرير', value: 'view', cls: 'primary' }, { label: 'مشاركة / حفظ', value: 'share' }, { label: 'لاحقًا', value: null }]);
+    if (pick === 'view') openReport(html, () => shareFile(name, html));
+    else if (pick === 'share') shareFile(name, html);
+  });
 }
 
 /* ---------------- voice control (Arabic) ---------------- */
@@ -133,7 +158,7 @@ function voice() {
 }
 
 async function boot() {
-  buildNav(); statusBar(); voice();
+  buildNav(); statusBar(); voice(); initSession();
   try { await loadLibrary(); } catch (e) { console.warn('library', e); }
   window.addEventListener('hashchange', route);
   route();

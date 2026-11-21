@@ -1,5 +1,5 @@
 // Live data, trip recorder / guided tests, predictive trends, phone sensors.
-import { $, $$, esc, bus, toast, conf, fmtDate, fmtTime, uid, sleep, linreg, download, shareFile, confirmAction, safeImg } from './util.js';
+import { $, $$, esc, bus, toast, conf, fmtDate, fmtTime, uid, sleep, linreg, download, shareFile, confirmAction, safeImg, withTimeout, keepAwake } from './util.js';
 import { app, startLive, stopLive, requireConn } from './core.js';
 import { PIDS, pidName, rangeStatus, VOLT_RANGES, chargeRange } from './obd.js';
 import { pidGauge, updatePidGauge, drawChart, sparkline } from './widgets.js';
@@ -28,9 +28,45 @@ export function liveView(c) {
   if (!connected()) return whenConnected(c, liveView);
   let ecus = [...app.pidSupport.keys()];
   let ecu = app.primaryEcu();
-  let gaugePids = [], chartPids = [], recording = null;
+  let gaugePids = [], chartPids = [], recording = null, lastSaved = null;
   const offs = [];
   const gs = {};
+  // Recording goes into the app's history («مسجّل المشوار», with report + CSV). It is saved every
+  // 30 s, when the screen locks/the app goes to the background, and when the page is left — so a
+  // drive is never lost, and the screen is kept awake where the browser allows it.
+  const recTrip = (r, partial, note) => {
+    const rows = r.rows, end = rows.at(-1)?.t || Date.now();
+    const samples = rows.map(x => ({ t: x.t, rpm: x.v[0x0c], speed: x.v[0x0d], ect: x.v[0x05], load: x.v[0x04], stft1: x.v[0x06], ltft1: x.v[0x07], stft2: x.v[0x08], ltft2: x.v[0x09], maf: x.v[0x10], volt: x.volt }));
+    const cols = [...new Set(rows.flatMap(x => Object.keys(x.v)))].map(Number).sort((a, b) => a - b);
+    const every = Math.max(1, Math.ceil(rows.length / 3600));
+    const raw = { cols, rows: rows.filter((_, i) => i % every === 0).map(x => [x.t, ...cols.map(p => x.v[p] ?? null), x.volt ?? null]) };
+    const events = [{ t: r.t0, text: 'بدء تسجيل البيانات الحية' }].concat(partial ? [] : [{ t: end, text: note || 'إيقاف التسجيل', kind: note ? 'warn' : '' }]);
+    return { id: r.id, t: r.t0, dur: end - r.t0, name: 'تسجيل البيانات الحية', test: 'live', demo: app.demo, partial, vehicle: { ...app.vehicle, vinInfo: undefined }, events, verdict: partial ? null : freeVerdict({ samples }), samples: samples.filter((_, i, a) => a.length < 1500 || i % Math.ceil(a.length / 1500) === 0), trims: trimAnalysis(samples), raw };
+  };
+  const saveRec = (r, partial, note) => (r.rows.length ? withTimeout(store.put('trips', recTrip(r, partial, note)), 6000) : Promise.resolve(null));
+  const startRec = () => {
+    const r = { id: uid(), t0: Date.now(), rows: [], wake: keepAwake() };
+    r.timer = setInterval(() => saveRec(r, true).catch(() => {}), 30000);
+    r.onHide = () => { if (document.visibilityState === 'hidden') saveRec(r, true).catch(() => {}); };
+    document.addEventListener('visibilitychange', r.onHide);
+    recording = r; lastSaved = null;
+    toast('بدأ التسجيل — يُحفظ تلقائيًا في «مسجّل المشوار»', 'ok');
+  };
+  const stopRec = async note => {
+    const r = recording; if (!r) return;
+    recording = null; clearInterval(r.timer); document.removeEventListener('visibilitychange', r.onHide); r.wake.release();
+    if (!r.rows.length) { toast('لم تُسجَّل أي قراءة — السيارة لم ترسل قيمًا أثناء التسجيل', 'warn'); return; }
+    try { await saveRec(r, false, note); lastSaved = r.id; toast(`حُفظ التسجيل (${r.rows.length} قراءة) في «مسجّل المشوار» — منه التقرير وملف CSV`, 'ok'); }
+    catch (e) { toast('تعذّر حفظ التسجيل على هذا الجهاز: ' + e.message, 'err'); }
+  };
+  const recLabel = () => (recording ? '■ إيقاف التسجيل ' + fmtTime(Date.now() - recording.t0) : '● تسجيل');
+  const recBtn = () => `<button class="btn ${recording ? 'danger' : ''}" id="lRec">${recLabel()}</button>`;
+  const syncRec = () => {
+    const b = $('#lRec', c); if (b) { b.textContent = recLabel(); b.classList.toggle('danger', !!recording); }
+    const h = $('#lRecHint', c); if (h) h.innerHTML = recHint();
+  };
+  const recHint = () => recording ? `<div class="small muted" style="margin-top:8px">يُحفظ تلقائيًا في «مسجّل المشوار» كل 30 ثانية. ${recording.wake.supported ? 'الشاشة تبقى شغالة أثناء التسجيل.' : 'اترك الشاشة مفتوحة: هذا المتصفح لا يمنع قفلها، وقفل الشاشة يوقف القراءة (المسجّل حتى تلك اللحظة يبقى محفوظًا).'}</div>`
+    : lastSaved ? '<div style="margin-top:8px"><a class="btn sm" href="#/trip">عرض التسجيل والتقرير في «مسجّل المشوار»</a></div>' : '';
   const draw = () => {
     // the computers can change under this page (new connection / scan): follow them
     if (!app.pidSupport.has(ecu)) { ecus = [...app.pidSupport.keys()]; ecu = app.primaryEcu(); chartPids = []; }
@@ -43,7 +79,7 @@ export function liveView(c) {
       <label class="small muted">الكمبيوتر:</label><select id="lEcu" style="width:auto">${ecus.map(e => `<option value="${e}" ${e === ecu ? 'selected' : ''}>${esc(app.ecus.get('std:' + e)?.name || e)} (${app.pidSupport.get(e).size} قيمة)</option>`).join('')}</select>
       <span class="sp" style="flex:1"></span><span class="small dim">${sup.length} قيمة مكتشفة من الكمبيوتر ${conf('sure')}</span>
       <select id="lAdd" style="width:auto"><option value="">+ إضافة عدّاد</option>${sup.filter(p => !gaugePids.includes(p) && PIDS[p]?.[3]).map(p => `<option value="${p}">${esc(pidName(p))}</option>`).join('')}</select>
-      <button class="btn ${recording ? 'danger' : ''}" id="lRec">${recording ? '■ إيقاف التسجيل' : '● تسجيل'}</button></div></div>
+      ${recBtn()}</div><div id="lRecHint">${recHint()}</div></div>
     <div class="gauges" id="lG"></div>
     <div class="grid g2" style="margin-top:16px">
       <div class="card"><div class="card-head"><h2>الرسم البياني</h2><span class="sp"></span><select id="lChart" style="width:auto"><option value="">+ قيمة للرسم</option>${sup.filter(p => PIDS[p]?.[3]).map(p => `<option value="${p}">${esc(pidName(p))}</option>`).join('')}</select></div>
@@ -60,15 +96,10 @@ export function liveView(c) {
     $('#lAdd', c).onchange = e => { const p = +e.target.value; if (!p) return; saveSettings({ gauges: [...gaugePids, p] }); draw(); };
     $('#lChart', c).onchange = e => { const p = +e.target.value; if (p && !chartPids.includes(p)) chartPids = [...chartPids, p].slice(-3); draw(); };
     $$('[data-rm]', c).forEach(a => a.onclick = ev => { ev.preventDefault(); chartPids = chartPids.filter(x => x !== +a.dataset.rm); draw(); });
-    $('#lRec', c).onclick = () => {
-      if (recording) {
-        const rows = recording; recording = null;
-        const cols = [...new Set(rows.flatMap(r => Object.keys(r.v)))].map(Number);
-        const csv = ['time,' + cols.map(p => `"${pidName(p)} (${PIDS[p]?.[1] || ''})"`).join(',') + ',battery_V', ...rows.map(r => [new Date(r.t).toISOString(), ...cols.map(p => r.v[p] ?? ''), r.volt ?? ''].join(','))].join('\n');
-        download(`live-${Date.now()}.csv`, '﻿' + csv, 'text/csv');
-        toast(`تم حفظ ${rows.length} قراءة كملف CSV`, 'ok');
-      } else { recording = []; toast('بدأ التسجيل', 'ok'); }
-      $('#lRec', c).textContent = recording ? '■ إيقاف التسجيل' : '● تسجيل'; $('#lRec', c).classList.toggle('danger', !!recording);
+    $('#lRec', c).onclick = async e => {
+      const b = e.currentTarget; b.disabled = true;
+      try { if (recording) await stopRec(); else startRec(); } finally { b.disabled = false; }
+      syncRec();
     };
     startLive({ fast: [...new Set([...gaugePids, ...chartPids, 0x06, 0x07, 0x08, 0x09, 0x0c].filter(p => sup.includes(p)))], slow: sup, rateMs: 250 });
   };
@@ -78,12 +109,18 @@ export function liveView(c) {
     const vals = Object.fromEntries(Object.entries(lv).map(([k, v]) => [k, v.value]));
     const ctx = app.ctx();
     for (const [p, g] of Object.entries(gs)) updatePidGauge(g, +p, vals[p], ctx);
-    if (recording) recording.push({ t: Date.now(), v: vals, volt: app.conn.voltage });
+    if (recording) {
+      // record only readings refreshed in the last 3 s (a dropped link must not repeat frozen values)
+      const fresh = Date.now() - 3000, row = {};
+      for (const [k, v] of Object.entries(lv)) if (v.value != null && v.t > fresh) row[k] = v.value;
+      if (Object.keys(row).length) recording.rows.push({ t: Date.now(), v: row, volt: app.conn.voltage });
+    }
     const cv = $('#lCv', c);
     if (cv) drawChart(cv, chartPids.map((p, i) => ({ name: pidName(p), color: COLORS[i], data: app.hist.get(`${ecu}:${p}`) || [] })), { tspan: 60000, band: chartPids.length === 1 ? PIDS[chartPids[0]]?.[7]?.ok : null });
     // the long table and the text panels change slowly: refreshing them once a second keeps phones smooth
     if (Date.now() - slowAt < 1000) return;
     slowAt = Date.now();
+    if (recording) { const b = $('#lRec', c); if (b) b.textContent = recLabel(); }
     $$('#lT tr', c).forEach(tr => {
       const p = +tr.dataset.p, v = lv[p]; if (!v) return;
       tr.querySelector('.v').textContent = `${v.text} ${v.unit || ''}`;
@@ -109,13 +146,13 @@ export function liveView(c) {
   // disconnected → show "connect first"; connected again → rebuild the page (polling restarts with it)
   let shown = true;
   offs.push(bus.on('conn', ({ state }) => {
-    if (state === 'off' || state === 'err') { if (shown) { stopLive(); notConn(c); shown = false; } }
+    if (state === 'off' || state === 'err') { if (recording) stopRec('انقطع الاتصال بالسيارة'); if (shown) { stopLive(); notConn(c); shown = false; } }
     else if (state === 'on' && !shown) { shown = true; draw(); }
   }));
   // a new connection discovers its computers after "connected": redraw once they are known
   offs.push(bus.on('data', () => { if (shown && !app.scanning && app.pidSupport.size && (!app.pidSupport.has(ecu) || ecus.length !== app.pidSupport.size)) draw(); }));
   draw();
-  return () => { offs.forEach(f => f()); stopLive(); };
+  return () => { offs.forEach(f => f()); stopLive(); if (recording) stopRec('أُوقف عند مغادرة صفحة البيانات الحية'); };
 }
 
 /* =========================== Trip recorder & guided tests =========================== */
@@ -220,18 +257,32 @@ export function tripView(c) {
       <div class="card glow"><div class="card-head"><h2>مسجّل المشوار</h2></div><p class="muted">يسجّل القيم المهمة أثناء القيادة مع خط زمني للأحداث (خروج قيمة عن الطبيعي، ظهور عطل معلّق، تغيّر الفولت)، ثم يعطي نتيجة مدعومة بالأدلة.</p>
         <button class="btn primary lg" id="tFree">● ابدأ تسجيل مشوار</button></div>
       <div class="card"><h2>اختبارات موجّهة خطوة بخطوة</h2><div class="list">${Object.entries(TESTS).map(([k, t]) => `<button class="btn" style="justify-content:flex-start" data-test="${k}"><span style="font-size:18px">${t.icon}</span> ${t.name}</button>`).join('')}</div></div>
-      <div class="card spanall"><h2>المشاوير والاختبارات المحفوظة</h2>${trips.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>التاريخ</th><th>النوع</th><th>المدة</th><th>النتيجة</th><th></th></tr></thead><tbody>${trips.slice(0, 30).map(t => `<tr><td>${fmtDate(t.t)}${t.demo ? ' <span class="badge vi">تجريبي</span>' : ''}</td><td>${esc(t.name)}</td><td class="num">${fmtTime(t.dur || 0)}</td><td>${t.verdict ? (t.verdict.ok ? '<span class="badge ok">سليم</span>' : '<span class="badge warn">يحتاج انتباه</span>') : '—'}</td><td><button class="btn sm" data-share="${t.id}">مشاركة التقرير</button> <button class="btn sm ghost" data-del="${t.id}">حذف</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">لا توجد تسجيلات بعد</div>'}</div></div>`;
+      <div class="card spanall"><h2>المشاوير والاختبارات المحفوظة</h2>${trips.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>التاريخ</th><th>النوع</th><th>المدة</th><th>النتيجة</th><th></th></tr></thead><tbody>${trips.slice(0, 30).map(t => `<tr><td>${fmtDate(t.t)}${t.demo ? ' <span class="badge vi">تجريبي</span>' : ''}</td><td>${esc(t.name)}${t.partial ? ' <span class="badge warn">غير مكتمل</span>' : ''}</td><td class="num">${fmtTime(t.dur || 0)}</td><td>${t.verdict ? (t.verdict.ok ? '<span class="badge ok">سليم</span>' : '<span class="badge warn">يحتاج انتباه</span>') : '—'}</td><td><button class="btn sm" data-share="${esc(t.id)}">مشاركة التقرير</button> <button class="btn sm ghost" data-csv="${esc(t.id)}">CSV</button> <button class="btn sm ghost" data-del="${esc(t.id)}">حذف</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">لا توجد تسجيلات بعد</div>'}</div></div>`;
     $('#tFree', c).onclick = () => startTest(null);
     $$('[data-test]', c).forEach(b => b.onclick = () => startTest(b.dataset.test));
-    $$('[data-share]', c).forEach(b => b.onclick = async () => { const t = await store.get('trips', b.dataset.share); await shareFile(`trip-${new Date(t.t).toISOString().slice(0, 10)}.html`, tripReportHtml(t)); });
+    $$('[data-share]', c).forEach(b => b.onclick = async () => { const t = await store.get('trips', b.dataset.share); if (!t) { list(); return; } const r = await shareFile(`trip-${localStamp(t.t, '-')}.html`, tripReportHtml(t)); if (r === 'downloaded') toast('نُزّل التقرير', 'ok'); });
+    $$('[data-csv]', c).forEach(b => b.onclick = async () => { const t = await store.get('trips', b.dataset.csv); if (!t) { list(); return; } const r = await shareFile(`${t.test === 'live' ? 'live' : 'trip'}-${localStamp(t.t, '-')}.csv`, csvOf(t), 'text/csv'); if (r === 'downloaded') toast('نُزّل ملف CSV', 'ok'); });
     $$('[data-del]', c).forEach(b => b.onclick = async () => { await store.del('trips', b.dataset.del); list(); });
   };
   const sup = () => app.pidSupport.get(app.primaryEcu()) || new Set();
+  // one record per run (same id): autosaves overwrite it, the final result replaces it
+  const tripRecord = (r, partial, note) => ({
+    id: r.id, t: r.t0, dur: Date.now() - r.t0, name: r.T.name, test: r.key, demo: app.demo, partial,
+    vehicle: { ...app.vehicle, vinInfo: undefined }, events: note ? [...r.events, { t: Date.now(), text: note, kind: 'warn' }] : r.events,
+    verdict: partial ? null : r.verdict, res: { ...r.res, series: undefined },
+    samples: r.samples.filter((_, i, a) => a.length < 1500 || i % Math.ceil(a.length / 1500) === 0), trims: trimAnalysis(r.samples),
+  });
+  const saveTrip = (r, partial, note) => withTimeout(store.put('trips', tripRecord(r, partial, note)), 6000);
   const startTest = async key => {
     const T = key ? TESTS[key] : { name: 'مشوار حر', steps: [{ t: 'سجّل أثناء القيادة. اضغط «إنهاء» عند الوصول', record: 3600, allowMoving: true }], desc: 'تسجيل حر', verdict: s => freeVerdict(s) };
     const ok = await confirmAction({ title: T.name, what: esc(T.desc), extra: `<ul class="small"><li>لا تتعامل مع الجهاز أثناء القيادة؛ اجعل شخصًا آخر يتابع أو ثبّته في حامل.</li>${T.engine === 'off' ? '<li>يجب أن تكون المكينة طافية والسيارة متوقفة.</li>' : ''}${T.steps.some(s => !s.allowMoving) ? '<li>هذا الاختبار يُنفّذ والسيارة واقفة (السرعة 0) — يتوقف تلقائيًا إن تحركت.</li>' : ''}</ul>`, reversible: 'الاختبار للقراءة فقط ولا يغيّر أي شيء في السيارة' });
     if (!ok) return;
-    run = { key, T, step: 0, t0: Date.now(), events: [], samples: [], res: {}, o2: {} };
+    run = { id: uid(), key, T, step: 0, t0: Date.now(), events: [], samples: [], res: {}, o2: {} };
+    // a locked phone suspends the page: keep the screen on where possible, and save as we go
+    { const r = run; r.wake = keepAwake();
+      r.autosave = setInterval(() => { if (!r.done && r.samples.length >= 10) saveTrip(r, true).catch(() => {}); }, 30000);
+      r.onHide = () => { if (document.visibilityState === 'hidden' && !r.done && r.samples.length >= 10) saveTrip(r, true).catch(() => {}); };
+      document.addEventListener('visibilitychange', r.onHide); }
     const pids = [0x0c, 0x0d, 0x05, 0x04, 0x06, 0x07, 0x08, 0x09, 0x10, 0x0b, 0x0e, 0x11, 0x42].filter(p => sup().has(p));
     const ev = (t, kind = '') => { run.events.push({ t: Date.now(), text: t, kind }); renderRun(); };
     run.ev = ev; ev('بدء: ' + T.name);
@@ -278,12 +329,13 @@ export function tripView(c) {
         ${app.demo ? '<div class="hint small">في الوضع التجريبي يحاكي البرنامج تغيّر حالة المكينة عند الضغط على «تم».</div>' : ''}
         <div id="rPre" class="small" style="margin:8px 0"></div>
         <div class="btn-row">${stp.crank ? `<button class="btn primary" id="rCrank" ${run.waiting ? 'disabled' : ''}>ابدأ التسجيل ثم دوّر المكينة</button>` : stp.record ? `<button class="btn primary" id="rNext" ${run.waiting ? 'disabled' : ''}>${stp.record > 100 ? 'إنهاء' : 'ابدأ هذه الخطوة'}</button>` : `<button class="btn primary" id="rNext" ${run.waiting ? 'disabled' : ''}>تم — سجّل القراءة</button>`}<button class="btn ghost" id="rStop">إلغاء</button></div>
-        <div class="progress ${run.waiting ? '' : 'hidden'}" id="rProg" style="margin-top:10px"><i style="width:0"></i></div>`}
+        <div class="progress ${run.waiting ? '' : 'hidden'}" id="rProg" style="margin-top:10px"><i style="width:0"></i></div>
+        <div class="small muted" style="margin-top:8px">يُحفظ تلقائيًا كل 30 ثانية. ${run.wake?.supported ? 'الشاشة تبقى شغالة أثناء التسجيل.' : 'اترك الشاشة مفتوحة: هذا المتصفح لا يمنع قفلها، وقفلها يوقف القراءة (المسجّل حتى تلك اللحظة يبقى محفوظًا).'}</div>`}
         <div id="rVerdict"></div>
       </div>
       <div class="card"><h2>قراءات الآن</h2><div id="rLive" class="kv"></div><div class="chart-box" style="height:150px;margin-top:10px"><canvas id="rCv"></canvas></div></div>
       <div class="card spanall"><h2>الخط الزمني للأحداث</h2><div class="tl">${run.events.map(e => `<div class="tl-item ${e.kind}"><span class="t">${fmtTime(e.t - run.t0)}</span> ${esc(e.text)}</div>`).join('')}</div></div></div>`;
-    $('#rStop', c)?.addEventListener('click', () => { cleanupRun(); list(); });
+    $('#rStop', c)?.addEventListener('click', async () => { await cleanupRun('أُلغي قبل الإنهاء — حُفظ ما سُجّل'); list(); });
     $('#rNext', c)?.addEventListener('click', nextStep);
     $('#rCrank', c)?.addEventListener('click', crankTest);
     if (run.done) showVerdict();
@@ -348,14 +400,14 @@ export function tripView(c) {
   };
   const finish = async () => {
     if (!run || run.done) return;
-    run.done = true; clearInterval(run.dtcTimer); stopLive();
+    run.done = true; clearInterval(run.dtcTimer); clearInterval(run.autosave); document.removeEventListener('visibilitychange', run.onHide); run.wake?.release(); stopLive();
     if (app.demo) { const d = app.conn.transport; d.driving = false; d.setRpm(700); if (d.engine === 'off') d.setEngine('idle'); }
     const res = { ...run.res, samples: run.samples };
     run.verdict = run.abort ? { ok: false, lines: ['أُوقف الاختبار تلقائيًا لأن السيارة تحركت (شرط سلامة لهذا الاختبار). أعد المحاولة والسيارة واقفة.'] } : run.T.verdict(res);
     run.ev('انتهى — ' + (run.verdict.ok ? 'النتيجة سليمة' : 'يحتاج انتباه'), run.verdict.ok ? '' : 'warn');
-    const rec = { id: uid(), t: run.t0, dur: Date.now() - run.t0, name: run.T.name, test: run.key, demo: app.demo, vehicle: { ...app.vehicle, vinInfo: undefined }, events: run.events, verdict: run.verdict, res: { ...run.res, series: undefined }, samples: run.samples.filter((_, i, a) => a.length < 1500 || i % Math.ceil(a.length / 1500) === 0), trims: trimAnalysis(run.samples) };
+    const rec = tripRecord(run, false);
     const r = run; r.rec = rec;
-    await store.put('trips', rec);
+    try { await withTimeout(store.put('trips', rec), 6000); } catch (e) { toast('تعذّر حفظ النتيجة على هذا الجهاز: ' + e.message, 'err'); }
     if (run !== r) return; // the person left this page; the result is saved in the list
     speak((r.verdict.ok ? 'النتيجة سليمة. ' : 'النتيجة تحتاج انتباه. ') + r.verdict.lines.slice(0, 2).join('. '));
     renderRun();
@@ -365,17 +417,35 @@ export function tripView(c) {
     b.innerHTML = `<div class="${v.ok ? 'ok-box' : 'warn'}" style="margin-top:10px"><b>${v.ok ? '✓ النتيجة: سليم' : '⚠ النتيجة: يحتاج انتباه'}</b><ul>${v.lines.map(l => `<li>${esc(l)}</li>`).join('')}</ul></div>
       <div class="small dim" style="margin:6px 0">النتيجة مبنية على القراءات المسجّلة أعلاه (${run.samples.length} عينة) ${conf('best')}</div>
       <div class="btn-row"><button class="btn primary" id="rShare">مشاركة/حفظ التقرير</button><button class="btn" id="rBack">رجوع</button></div>`;
-    $('#rShare', c).onclick = () => shareFile(`trip-${new Date(run.t0).toISOString().slice(0, 10)}.html`, tripReportHtml(run.rec));
+    $('#rShare', c).onclick = () => shareFile(`trip-${localStamp(run.t0, '-')}.html`, tripReportHtml(run.rec));
     $('#rBack', c).onclick = () => { run = null; list(); };
   };
-  const cleanupRun = () => {
-    if (run) { clearInterval(run.dtcTimer); run.done = true; }
+  const cleanupRun = note => {
+    let saved = Promise.resolve();
+    if (run) {
+      clearInterval(run.dtcTimer); clearInterval(run.autosave); document.removeEventListener('visibilitychange', run.onHide); run.wake?.release();
+      if (!run.done && run.samples.length >= 10) saved = saveTrip(run, true, note || 'أُوقف عند مغادرة الصفحة — حُفظ ما سُجّل').catch(() => {});
+      run.done = true;
+    }
     if (run && app.demo && app.conn.transport?.setRpm) { const d = app.conn.transport; d.driving = false; d.setRpm(700); if (d.engine === 'off') d.setEngine('idle'); }
     run = null; stopLive();
+    return saved;
   };
   const t = prm.get('test');
   if (t && TESTS[t]) startTest(t); else list();
   return () => { cleanupRun(); offs.forEach(f => f()); };
+}
+// local date-time text (the phone's clock, not UTC) for file names and the CSV time column
+const p2 = n => String(n).padStart(2, '0');
+const localStamp = (t, sep = ' ') => { const d = new Date(t); return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}${sep}${p2(d.getHours())}${sep === ' ' ? ':' : '-'}${p2(d.getMinutes())}${sep === ' ' ? ':' + p2(d.getSeconds()) : ''}`; };
+// CSV of a saved recording: the full live-data columns when present, otherwise the trip samples
+function csvOf(t) {
+  if (t.raw?.cols) {
+    const { cols, rows } = t.raw;
+    return '\ufeff' + ['time,' + cols.map(p => `"${pidName(p)} (${PIDS[p]?.[1] || ''})"`).join(',') + ',battery_V', ...rows.map(r => [localStamp(r[0]), ...r.slice(1).map(x => x ?? '')].join(','))].join('\n');
+  }
+  const K = [['rpm', 'دوران المكينة (rpm)'], ['speed', 'السرعة (km/h)'], ['ect', 'حرارة التبريد (°C)'], ['load', 'الحِمل (%)'], ['stft1', 'تعديل قصير ب1 (%)'], ['ltft1', 'تعديل طويل ب1 (%)'], ['stft2', 'تعديل قصير ب2 (%)'], ['ltft2', 'تعديل طويل ب2 (%)'], ['maf', 'MAF (g/s)'], ['volt', 'فولت البطارية (V)']];
+  return '\ufeff' + ['time,' + K.map(k => `"${k[1]}"`).join(','), ...(t.samples || []).map(x => [localStamp(x.t), ...K.map(([k]) => x[k] ?? '')].join(','))].join('\n');
 }
 function freeVerdict(s) {
   const sm = s.samples || []; if (sm.length < 5) return { ok: true, lines: ['تسجيل قصير'] };

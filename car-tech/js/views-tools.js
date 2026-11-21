@@ -1,7 +1,7 @@
 // Phase-2 screens: services & bidirectional control (the fault analyst lives in views-analyst.js,
 // wiring diagrams in views-wiring.js),
 // AI technician, reports & history, settings.
-import { $, $$, esc, toast, modal, confirmAction, conf, fmtDate, hex2, hex3, hex4, download, shareFile, uid, safeImg } from './util.js';
+import { $, $$, esc, bus, toast, modal, confirmAction, conf, fmtDate, hex2, hex3, hex4, download, shareFile, uid, safeImg } from './util.js';
 import { app, requireConn, snapshotScan, loadLibrary, exclusive } from './core.js';
 import { combineReadiness, readinessStats, chargeRange } from './obd.js';
 import { describeDtc } from './dtcdb.js';
@@ -10,6 +10,8 @@ import { SIDS, STD_DIDS, routineBlocked, nrcText } from './network.js';
 import { store, settings, saveSettings } from './store.js';
 import { aiAvailable, buildContext, askClaude, localAnswer, saveAnswer } from './ai.js';
 import { scanReportHtml } from './report.js';
+import { session } from './session.js';
+import { sessionReportHtml, openReport } from './session-report.js';
 import { clearOne } from './views-core.js';
 import { speak, canSpeak, params, go } from './nav.js';
 
@@ -222,7 +224,14 @@ export async function reportsView(c) {
   const draw = async () => {
     const scans = await store.all('scans');
     const photos = await store.all('photos');
-    c.innerHTML = `<div class="grid g2"><div class="card glow"><h2>تقرير الحالة الحالية</h2><p class="small muted">تقرير HTML مستقل يُفتح على أي جهاز بدون إنترنت: السيارة، الأعطال لكل كمبيوتر، الجاهزية، لقطة الحظة، الترجيح، والصور الموثّقة.</p>
+    const sess = (await store.all('sessions').catch(() => [])).filter(x => x.status === 'done');
+    const live = session.rec;
+    const dur = ms => { const t = Math.round(ms / 1000), h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60); return h ? `${h} س ${m} د` : `${m} د ${t % 60} ث`; };
+    c.innerHTML = `<div class="card glow" style="margin-bottom:16px"><div class="card-head"><h2>تقارير الجلسات — التسجيل التلقائي</h2><span class="sp"></span>
+        ${live ? `<span class="badge err">● يسجّل الآن منذ ${dur(Date.now() - live.t)}</span><button class="btn sm danger" id="sStop">أنهِ التسجيل وأصدر التقرير</button>` : app.conn.ready ? '<button class="btn sm" id="sStart">ابدأ التسجيل الآن</button>' : ''}</div>
+      <div class="small muted">يبدأ التسجيل لحاله أول ما تسوي فحص للأعطال، ويسجّل كل شي (كل القراءات الحية، الفولت، الأكواد وقت ظهورها واختفائها، كل فحص وعملية ورسالة، نتائج الفحص الموجّه، وسجل القطعة) لين تفصل القطعة — وبعدها يطلع التقرير الشامل لحاله. ينحفظ كل 20 ثانية، فلو انقفل الجوال يطلع التقرير لين آخر لحظة.</div>
+      ${sess.length ? `<div class="tbl-wrap" style="margin-top:10px"><table class="tbl"><thead><tr><th>البداية</th><th>المدة</th><th>المسافة</th><th>الأكواد</th><th>القيم</th><th>الانتهاء</th><th></th></tr></thead><tbody>${sess.map(x => `<tr><td>${fmtDate(x.t)}${x.demo ? ' <span class="badge">تجريبي</span>' : ''}</td><td>${dur((x.tEnd || x.t) - x.t)}</td><td class="num">${(x.stats?.dist || 0).toFixed(1)} km</td><td>${Object.keys(x.codes || {}).length}</td><td>${(x.stats?.series || []).length}</td><td class="small dim">${esc(x.endedBy || '')}</td><td><div class="btn-row"><button class="btn sm primary" data-sview="${x.id}">عرض</button><button class="btn sm" data-sshare="${x.id}">مشاركة</button><button class="btn sm ghost" data-sdel="${x.id}">حذف</button></div></td></tr>`).join('')}</tbody></table></div>` : '<div class="small dim" style="margin-top:8px">ما فيه تقارير جلسات بعد — تطلع هنا بعد أول فحص وفصل للقطعة.</div>'}</div>
+    <div class="grid g2"><div class="card glow"><h2>تقرير الحالة الحالية</h2><p class="small muted">تقرير HTML مستقل يُفتح على أي جهاز بدون إنترنت: السيارة، الأعطال لكل كمبيوتر، الجاهزية، لقطة الحظة، الترجيح، والصور الموثّقة.</p>
       <label class="chk small"><input type="checkbox" id="rPh" ${photos.length ? 'checked' : ''}> إرفاق الصور الموثّقة (${photos.length})</label>
       <div class="btn-row"><button class="btn primary" id="rNow" ${app.ecus.size ? '' : 'disabled'}>إنشاء ومشاركة</button><button class="btn" id="rDl" ${app.ecus.size ? '' : 'disabled'}>تنزيل</button></div>${app.ecus.size ? '' : '<div class="small dim">اتصل وافحص أولًا، أو اختر فحصًا محفوظًا من السجل.</div>'}</div>
       <div class="card"><h2>مقارنة الحالة عبر الزمن</h2><p class="small muted">اختر فحصين من السجل لمقارنة الأعطال الجديدة والمحلولة والمستمرة.</p><button class="btn" id="rCmp" ${pick.length === 2 ? '' : 'disabled'}>مقارنة المحدّدين (${pick.length}/2)</button><div id="rCmpOut"></div></div>
@@ -231,8 +240,14 @@ export async function reportsView(c) {
       <div class="small dim" style="margin-top:8px">المرحلة الأولى: التخزين محلي لكل جهاز. المزامنة بين الأجهزة غير متوفرة بعد — يمكنك نقل البيانات بتصدير نسخة احتياطية من الإعدادات.</div></div></div>`;
     const make = async (rec) => { if ($('#rPh', c)?.checked) rec = { ...rec, photos: photos.filter(p => safeImg(p.data) && (!rec.vehicle?.vin || !p.vin || p.vin === rec.vehicle.vin)) }; return scanReportHtml(rec, correlate({ dtcs: rec.dtcs || [], live: rec.live || {}, trims: null, volt: rec.voltage, mode06: (rec.mode06 || []).flatMap(m => m.rows || []), charge: chargeRange(rec.vehicle) })); };
     const cur = () => app.lastScan && app.lastScan.ecus ? { ...snapshotScan(), t: app.lastScan.t } : snapshotScan();
+    const sName = x => `car-session-${new Date(x.t).toISOString().slice(0, 16).replace(/[:T]/g, '-')}.html`;
+    $$('[data-sview]', c).forEach(b => b.onclick = async () => { const x = await store.get('sessions', b.dataset.sview); if (!x) return draw(); const html = sessionReportHtml(x); openReport(html, () => shareFile(sName(x), html)); });
+    $$('[data-sshare]', c).forEach(b => b.onclick = async () => { const x = await store.get('sessions', b.dataset.sshare); if (x) shareFile(sName(x), sessionReportHtml(x)); });
+    $$('[data-sdel]', c).forEach(b => b.onclick = async () => { if (await confirmAction({ title: 'حذف تقرير جلسة', what: 'حذف تسجيل هذه الجلسة وتقريرها من هذا الجهاز.', reversible: false })) { await store.del('sessions', b.dataset.sdel); draw(); } });
+    $('#sStart', c)?.addEventListener('click', () => { session.start('يدويًا من صفحة التقارير'); draw(); });
+    $('#sStop', c)?.addEventListener('click', async () => { await session.stop('أُنهي التسجيل يدويًا'); draw(); });
     $('#rNow', c).onclick = async () => shareFile(`car-report-${new Date().toISOString().slice(0, 10)}.html`, await make(cur()));
-    $('#rDl', c).onclick = async () => download(`car-report-${new Date().toISOString().slice(0, 10)}.html`, await make(cur()));
+    $('#rDl', c).onclick = async () => { const r = await download(`car-report-${new Date().toISOString().slice(0, 10)}.html`, await make(cur())); if (r === 'downloaded') toast('نُزّل التقرير', 'ok'); };
     $$('[data-rep]', c).forEach(b => b.onclick = async () => { const s = await store.get('scans', b.dataset.rep); if (!s) { toast('هذا الفحص لم يعد موجودًا', 'warn'); draw(); return; } shareFile(`car-report-${new Date(s.t).toISOString().slice(0, 10)}.html`, await make(s)); });
     $$('[data-del]', c).forEach(b => b.onclick = async () => { if (await confirmAction({ title: 'حذف فحص', what: 'حذف هذا الفحص من السجل المحلي.', reversible: false })) { await store.del('scans', b.dataset.del); pick = pick.filter(x => x !== b.dataset.del); draw(); } });
     $$('[data-pick]', c).forEach(b => b.onchange = () => { pick = b.checked ? [...pick, b.dataset.pick].slice(-2) : pick.filter(x => x !== b.dataset.pick); draw(); });
@@ -251,7 +266,9 @@ export async function reportsView(c) {
         <dt>الجاهزية</dt><dd>${rdy(a)} ← ${rdy(b)}</dd><dt>فولت البطارية</dt><dd class="num">${a.voltage?.toFixed(2) || '—'} ← ${b.voltage?.toFixed(2) || '—'}</dd></dl>`;
     };
   };
+  const off = bus.on('session', ({ state }) => { if (state === 'done' && c.isConnected) draw(); });
   draw();
+  return off;
 }
 
 /* =========================== Settings =========================== */
@@ -311,18 +328,19 @@ export function settingsView(c) {
       } catch (er) { toast('ملف غير صالح: ' + er.message, 'err'); }
       e.target.value = '';
     };
-    $('#lTpl', c).onclick = () => download('car-tech-library-template.json', JSON.stringify(LIB_TEMPLATE, null, 2), 'application/json');
+    $('#lTpl', c).onclick = async () => { const r = await download('car-tech-library-template.json', JSON.stringify(LIB_TEMPLATE, null, 2), 'application/json'); if (r === 'downloaded') toast('نُزّل القالب', 'ok'); };
     $$('[data-ldel]', c).forEach(b => b.onclick = async () => { await store.del('library', b.dataset.ldel); await loadLibrary(); draw(); });
-    $('#dExp', c).onclick = async () => { const o = { v: 1, t: Date.now(), settings: { ...settings(), apiKey: '' } }; for (const s2 of ['scans', 'trips', 'ai', 'photos', 'vehicles', 'library']) o[s2] = await store.all(s2); download(`car-tech-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(o), 'application/json'); toast('صُدّرت النسخة (بدون مفتاح API)', 'ok'); };
+    $('#dExp', c).onclick = async () => { const o = { v: 1, t: Date.now(), settings: { ...settings(), apiKey: '' } }; for (const s2 of ['scans', 'trips', 'ai', 'photos', 'vehicles', 'library', 'sessions']) o[s2] = await store.all(s2); const r = await download(`car-tech-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(o), 'application/json'); if (r === 'downloaded') toast('صُدّرت النسخة (بدون مفتاح API)', 'ok'); };
     $('#dImp', c).onchange = async e => {
       const f = e.target.files[0]; if (!f) return;
       try {
         const o = JSON.parse(await f.text());
         if (!o || typeof o !== 'object') throw new Error('bad');
         let n = 0, skipped = 0;
-        for (const s2 of ['scans', 'trips', 'ai', 'photos', 'vehicles', 'library']) {
+        for (const s2 of ['scans', 'trips', 'ai', 'photos', 'vehicles', 'library', 'sessions']) {
           for (const r of Array.isArray(o[s2]) ? o[s2] : []) {
             if (!r || typeof r !== 'object' || typeof r.id !== 'string' || !r.id) { skipped++; continue; }
+            if (s2 === 'sessions' && (typeof r.t !== 'number' || typeof r.series !== 'object' || !Array.isArray(r.events))) { skipped++; continue; }
             if (s2 === 'photos' && !safeImg(r.data)) { skipped++; continue; }
             await store.put(s2, r); n++;
           }
@@ -331,7 +349,7 @@ export function settingsView(c) {
       } catch (er) { toast('ملف غير صالح', 'err'); }
       e.target.value = '';
     };
-    $('#dClr', c).onclick = async () => { if (!(await confirmAction({ title: 'حذف كل البيانات', what: 'حذف الفحوصات والمشاوير والصور والإجابات والمكتبات المحفوظة على هذا الجهاز.', reversible: false, danger: true, typeWord: 'احذف' }))) return; for (const s2 of ['scans', 'trips', 'ai', 'photos', 'vehicles', 'library']) await store.clear(s2); await loadLibrary(); toast('حُذفت البيانات', 'ok'); draw(); };
+    $('#dClr', c).onclick = async () => { if (!(await confirmAction({ title: 'حذف كل البيانات', what: 'حذف الفحوصات والمشاوير وتقارير الجلسات والصور والإجابات والمكتبات المحفوظة على هذا الجهاز.', reversible: false, danger: true, typeWord: 'احذف' }))) return; for (const s2 of ['scans', 'trips', 'ai', 'photos', 'vehicles', 'library', 'sessions']) await store.clear(s2); await loadLibrary(); toast('حُذفت البيانات', 'ok'); draw(); };
   };
   draw();
 }
