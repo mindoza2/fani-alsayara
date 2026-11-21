@@ -43,10 +43,10 @@ const DESC = {
   0x4d: 'دقائق التشغيل واللمبة مضاءة.', 0x4e: 'دقائق منذ مسح الأعطال.', 0x5c: 'حرارة زيت المكينة.', 0x5e: 'معدل استهلاك الوقود.', 0xa6: 'عدّاد المسافة من الكمبيوتر.',
 };
 const descOf = s => s.gm ? gmPidInfo(s.pid)?.d || '' : DESC[s.pid] || '';
-const rangeOf = s => { const rg = s.gm ? gmPidInfo(s.pid)?.rg : PIDS[s.pid]?.[7]; return rg ? `${n2(rg.ok[0])}–${n2(rg.ok[1])}${rg.when === 'warm' ? ' (حارّة)' : rg.when === 'running' ? ' (شغالة)' : ''}` : '—'; };
+const rangeOf = s => { const rg = s.range || (s.gm ? gmPidInfo(s.pid)?.rg : PIDS[s.pid]?.[7]); return rg ? `${n2(rg.ok[0])}–${n2(rg.ok[1])}${rg.when === 'warm' ? ' (حارّة)' : rg.when === 'running' ? ' (شغالة)' : ''}` : '—'; };
 const n2 = v => v == null || Number.isNaN(v) ? '—' : Number.isInteger(v) ? String(v) : Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 10 ? v.toFixed(1) : v.toFixed(2);
 const dur = ms => { const s = Math.round(ms / 1000), h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60); return h ? `${h} س ${m} د` : `${m} د ${s % 60} ث`; };
-const clock = t => new Date(t).toLocaleTimeString('ar-SA-u-nu-latn', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+const clock = t => new Date(t).toLocaleTimeString('ar-SA-u-ca-gregory-nu-latn', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 const rel = (t, t0) => { const s = Math.max(0, Math.round((t - t0) / 1000)); return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`; };
 const COLORS = ['#3de0ff', '#ffb547', '#a57bff', '#33e39b', '#ff5468', '#9fd8ff', '#ffd166', '#ff8fb1'];
 
@@ -63,6 +63,23 @@ function chart(pts, t0, t1, col, unit) {
   const ticks = [0, 0.25, 0.5, 0.75, 1].map(f => `<text x="${(f * W).toFixed(0)}" y="${H - 2}" fill="#5f6f88" font-size="10" text-anchor="${f === 0 ? 'start' : f === 1 ? 'end' : 'middle'}">${rel(t0 + f * span, t0)}</text>`).join('');
   return `<svg viewBox="0 0 ${W} ${H}" style="direction:ltr"><line x1="0" y1="${y(mx)}" x2="${W}" y2="${y(mx)}" stroke="#1d2a40"/><line x1="0" y1="${y(mn)}" x2="${W}" y2="${y(mn)}" stroke="#1d2a40"/>
     <polyline points="${line.join(' ')}" fill="none" stroke="${col}" stroke-width="1.6"/><text x="${W}" y="11" fill="#8394ad" font-size="10" text-anchor="end">${esc(n2(mx))} ${esc(unit || '')}</text><text x="${W}" y="${H - 22}" fill="#8394ad" font-size="10" text-anchor="end">${esc(n2(mn))}</text>${ticks}</svg>`;
+}
+
+// Catalyst codes: how the rear oxygen sensor behaved in the recording next to the front one, plus
+// the catalyst self-test result (a healthy converter keeps the rear sensor nearly flat).
+function catEvidence(r, codes) {
+  const out = [];
+  for (const bank of [1, 2]) {
+    if (!codes.some(c => (bank === 1 ? /^P042[0-4]$/ : /^P043[0-4]$/).test(c))) continue;
+    const ser = pid => Object.values(r.series || {}).find(x => x.pid === pid && x.ecu === '7E8' && !x.text && x.pts.length > 5);
+    const f = ser(bank === 1 ? 0x14 : 0x18), b = ser(bank === 1 ? 0x15 : 0x19), o = ser(bank === 1 ? 0x19 : 0x15);
+    const span = x => { const v = x.pts.map(p => p[1]); return Math.max(...v) - Math.min(...v); };
+    const flips = x => { let n = 0; for (let i = 1; i < x.pts.length; i++) if ((x.pts[i - 1][1] - 0.45) * (x.pts[i][1] - 0.45) < 0) n++; return n; };
+    if (b) out.push(`في التسجيل: الحساس الخلفي للبنك ${bank} تحرّك ${n2(span(b))}V وعبر منتصف 0.45V ${flips(b)} مرة${f ? ` (الأمامي ${flips(f)} مرة)` : ''}${o ? ` — الخلفي للبنك الثاني تحرّك ${n2(span(o))}V فقط` : ''}${span(b) > 0.5 ? ' — الخلفي يقلّد الأمامي: الدبة ما تخزّن أكسجين' : ''}`);
+    const m6 = ((r.final?.mode06 || (r.scans || []).at(-1)?.mode06) || []).flatMap(x => x.rows || []).filter(x => x.mid === (bank === 1 ? 0x21 : 0x22));
+    for (const x of m6) out.push(`اختبار الدبة الذاتي (Mode 6) للبنك ${bank}: ${n2(x.value)} والحد ${n2(x.min)}–${n2(x.max)} ← ${x.pass ? 'ناجح' : 'راسب'}`);
+  }
+  return out;
 }
 
 export function sessionReportHtml(r) {
@@ -90,8 +107,9 @@ export function sessionReportHtml(r) {
   if (S.vOffMin != null && S.vOffMin < 11.9) flags.push(['warn', `فولت البطارية والمكينة طافية نزل إلى ${n2(S.vOffMin)}V`]);
   for (const s of S.series || []) if (!s.text && s.judged >= 5 && s.bad / s.judged > 0.1) flags.push(['warn', `${s.name}: ${Math.round(s.bad / s.judged * 100)}% من الوقت خارج الحد (${n2(s.min)}–${n2(s.max)} ${s.unit})`]);
   if (S.hardA + S.hardB) flags.push(['warn', `تسارع قوي ${S.hardA} مرة · فرملة قوية ${S.hardB} مرة`]);
-  const errLog = Object.entries(r.logErr || {}).reduce((a, [, n]) => a + n, 0);
-  if (errLog > 20) flags.push(['warn', `القطعة أعطت ${errLog} رد خطأ/بدون بيانات (تفاصيل في سجل القطعة)`]);
+  for (const s of S.series || []) if (!s.text && s.judged >= 5 && s.bad / s.judged <= 0.1 && s.warn / s.judged > 0.5) flags.push(['warn', `${s.pid === 0x42 ? 'فولت الكمبيوتر' : s.name}${s.ecu !== '7E8' ? ' (' + s.ecu + ')' : ''}: أغلب الوقت قرب حدّه (${n2(s.min)}–${n2(s.max)} ${s.unit})`]);
+  const errLog = Object.entries(r.logErr || {}).filter(([k]) => !/NO DATA/.test(k)).reduce((a, [, n]) => a + n, 0);
+  if (errLog > 10) flags.push(['warn', `القطعة أعطت ${errLog} رد خطأ (تفاصيل في سجل القطعة)`]);
   h += '<h2>الخلاصة</h2><div class="kpis">' + [
     ['مدة الجلسة', dur(t1 - t0)], ['المسافة', `${n2(S.dist || 0)} km`], ['أعلى سرعة', `${n2(S.maxSpd || 0)} km/h`], ['أعلى دوران', `${n2(S.maxRpm || 0)}`],
     ['تشغيل المكينة', dur((S.run || 0) * 1000)], ['خمول', dur((S.idle || 0) * 1000)], ['أكواد', `${codes.length}`], ['قيم مسجّلة', `${(S.series || []).length}`],
@@ -109,7 +127,8 @@ export function sessionReportHtml(r) {
   const m9 = (r.final?.mode09?.length ? r.final.mode09 : (r.scans || []).at(-1)?.mode09) || [];
   if ((r.idents || []).length || m9.length) {
     h += '<h2>هوية الكمبيوترات وبرمجتها</h2>';
-    for (const x of r.idents || []) h += `<div class="card"><b>${esc(x.name)}</b> <span class="mono dim">${esc(x.ecu)}</span>${x.fields.length ? `<table>${x.fields.map(([k, val]) => `<tr><td>${esc(k)}</td><td class="mono">${esc(val)}</td></tr>`).join('')}</table>` : '<div class="dim">ما رد على طلبات الهوية.</div>'}</div>`;
+    const clean = f => f.filter(([, val]) => !/^(FF ?)+$|^(00 ?)+$/i.test(String(val))).map(([k, val]) => [k, /رقم برنامج|رقم القطعة/.test(k) && /^([0-9A-F]{2} ){3}[0-9A-F]{2}$/i.test(String(val)) ? String(parseInt(String(val).replace(/ /g, ''), 16)) : val]);
+    for (const x0 of r.idents || []) { const x = { ...x0, fields: clean(x0.fields || []) }; h += `<div class="card"><b>${esc(x.name)}</b> <span class="mono dim">${esc(x.ecu)}</span>${x.fields.length ? `<table>${x.fields.map(([k, val]) => `<tr><td>${esc(k)}</td><td class="mono">${esc(val)}</td></tr>`).join('')}</table>` : '<div class="dim">ما رد على طلبات الهوية.</div>'}</div>`; }
     for (const x of m9) {
       const rows = [x.vin && ['رقم الهيكل (Mode 9)', x.vin], x.ecuName && ['اسم الكمبيوتر', x.ecuName], x.calid?.length && ['أرقام المعايرة (CALID)', x.calid.join(' · ')], x.cvn?.length && ['أرقام التحقق من البرمجة (CVN)', x.cvn.join(' · ')], x.esn && ['الرقم التسلسلي', x.esn]].filter(Boolean);
       h += `<div class="card"><b>معلومات Mode 9</b> <span class="mono dim">${esc(x.ecu)}</span><table>${rows.map(([k, val]) => `<tr><td>${esc(k)}</td><td class="mono">${esc(val)}</td></tr>`).join('')}</table>${x.ipt?.length ? `<details><summary>عدّادات أداء الاختبارات (IPT)</summary><table>${x.ipt.map(i => `<tr><td class="mono">${esc(i.k)}</td><td class="mono">${i.v}</td></tr>`).join('')}</table></details>` : ''}</div>`;
@@ -130,7 +149,7 @@ export function sessionReportHtml(r) {
       h += `<div class="card"><b>${esc(it.title)}</b> <span class="mono dim">${esc(it.codes.join(' '))}</span>${it.safety ? ' <span class="tag bad">سلامة</span>' : ''}
         <div class="bar">${Object.entries(it.areas || {}).filter(([, x]) => x > 0.01).map(([a, x]) => `<i style="width:${Math.round(x / tot * 100)}%;background:${AREA[a][1]}"></i>`).join('')}</div>
         <table><tr><th>السبب</th><th>الزاوية</th><th>الترجيح</th></tr>${it.causes.map(c => `<tr><td>${esc(c.t)}${c.why ? `<div class="dim">${esc(c.why)}</div>` : ''}</td><td>${esc(AREA[c.area]?.[0] || '')}</td><td>${Math.round(c.p * 100)}%</td></tr>`).join('')}</table>
-        ${it.evidence?.length ? `<div class="dim" style="margin-top:6px">الأدلة: ${esc(it.evidence.join(' · '))}</div>` : ''}
+        ${(() => { const ev = [...(it.evidence || []), ...catEvidence(r, it.codes)]; return ev.length ? `<div class="dim" style="margin-top:6px">الأدلة: ${esc(ev.join(' · '))}</div>` : ''; })()}
         ${it.path?.length ? `<div class="dim">الدائرة${it.loc ? ` (${esc(it.loc)})` : ''}: ${esc(it.path.map(p => p.pin && p.pin !== p.label ? `${p.label} = ${p.pin}` : p.label).join(' · '))}</div>` : ''}</div>`;
     }
     h += '<div class="dim">النسب ترجيحية؛ الحكم النهائي من الفحص على السيارة («ابدأ الفحص على السيارة» في محلّل الأعطال).</div>';
@@ -142,11 +161,14 @@ export function sessionReportHtml(r) {
 
   // ---------- 5. every value ----------
   const all = (S.series || []);
+  const ecuNames = Object.fromEntries(((r.final?.ecus || (r.scans || []).at(-1)?.ecus) || []).filter(e => /^std:/.test(e.key || '')).map(e => [e.key.slice(4), e.name]));
+  const who = ecu => ecuNames[ecu] || ecu;
+  const nameOf = s => s.pid === 0x42 ? 'فولت الكمبيوتر' : s.name;
   h += `<h2>كل القراءات الحية (${all.length})</h2><div class="dim">${all.filter(x => x.gm).length ? `منها ${all.filter(x => x.gm).length} قراءة خاصة بجنرال موتورز (مكتوب جنبها «GM»: «موثّقة» = مؤكدة من أكثر من مصدر، «تقديرية» = مقياسها من مصدر واحد). ` : ''}«الطبيعي» = الحد المرجعي العام، والحكم يُحسب فقط وقت تحقق شرطه (المكينة شغالة/حارّة).</div><div class="card"><table><tr><th>القيمة</th><th>أدنى–أعلى</th><th>متوسط</th><th>آخر</th><th>الطبيعي</th><th>الحكم</th></tr>`;
   for (const s of all) {
-    if (s.text) { h += `<tr><td>${esc(s.name)}<div class="dim">${esc(s.ecu)} · ${s.n} عينة</div>${descOf(s) ? `<div class="dim">${esc(descOf(s))}</div>` : ''}</td><td colspan="4">${esc(s.values.join(' ← '))}</td><td class="dim">حالات</td></tr>`; continue; }
+    if (s.text) { h += `<tr><td>${esc(nameOf(s))}<div class="dim">${esc(who(s.ecu))} · ${s.n} عينة</div>${descOf(s) ? `<div class="dim">${esc(descOf(s))}</div>` : ''}</td><td colspan="4">${esc(s.values.join(' ← '))}</td><td class="dim">حالات</td></tr>`; continue; }
     const j = !s.range ? '<span class="dim">بدون حد مرجعي</span>' : !s.judged ? '<span class="dim">ما توفّر الشرط</span>' : s.bad ? `<span class="bad">${Math.round(s.bad / s.judged * 100)}% خارج الحد</span>` : s.warn ? `<span class="warn">${Math.round(s.warn / s.judged * 100)}% قرب الحد</span>` : '<span class="ok">ضمن الطبيعي</span>';
-    h += `<tr><td>${esc(s.name)} <span class="dim">${esc(s.unit)}</span>${s.gm ? ` <span class="tag">GM · ${s.conf === 'best' ? 'موثّقة' : 'تقديرية'}</span>` : ''}<div class="dim">${esc(s.ecu)} · ${s.n} عينة${descOf(s) ? ' — ' + esc(descOf(s)) : ''}</div></td><td class="mono">${n2(s.min)}–${n2(s.max)}</td><td class="mono">${n2(s.avg)}</td><td class="mono">${n2(s.last)}</td><td class="mono">${rangeOf(s)}</td><td>${j}</td></tr>`;
+    h += `<tr><td>${esc(nameOf(s))} <span class="dim">${esc(s.unit)}</span>${s.gm ? ` <span class="tag">GM · ${s.conf === 'best' ? 'موثّقة' : 'تقديرية'}</span>` : ''}<div class="dim">${esc(who(s.ecu))} · ${s.n} عينة${descOf(s) ? ' — ' + esc(descOf(s)) : ''}${s.pid === 0x42 && s.range?.rvc ? ' — نظام الشحن RVC: 12.6–13.1V بدون أحمال طبيعي' : ''}</div></td><td class="mono">${n2(s.min)}–${n2(s.max)}</td><td class="mono">${n2(s.avg)}</td><td class="mono">${n2(s.last)}</td><td class="mono">${rangeOf(s)}</td><td>${j}</td></tr>`;
   }
   h += '</table></div>';
   const numeric = Object.values(r.series || {}).filter(s => !s.text && s.pts.length > 1).sort((a, b) => a.pid - b.pid);
@@ -163,7 +185,8 @@ export function sessionReportHtml(r) {
     const vv = r.volt || [];
     const vAt = t => { let b = null; for (const p of vv) { if (p[0] > t) break; b = p; } return b ? b[1] : null; };
     h += `<h2>جدول زمني للقراءات الأساسية (كل ${step / 1000} ثانية)</h2><div class="card"><table><tr><th>الوقت</th>${cols.map(([, n]) => `<th>${n}</th>`).join('')}<th>الفولت</th></tr>`;
-    for (let t = t0; t <= t1; t += step) h += `<tr><td class="mono">${rel(t, t0)}</td>${cols.map(([x]) => `<td class="mono">${n2(valAt(x, t))}</td>`).join('')}<td class="mono">${n2(vAt(t))}</td></tr>`;
+    const tFirst = Math.min(...cols.map(([x]) => x.pts[0]?.[0] || t1));
+    for (let t = t0 + Math.max(0, Math.floor((tFirst - t0) / step)) * step; t <= t1; t += step) h += `<tr><td class="mono">${rel(t, t0)}</td>${cols.map(([x]) => `<td class="mono">${n2(valAt(x, t))}</td>`).join('')}<td class="mono">${n2(vAt(t))}</td></tr>`;
     h += '</table></div>';
   }
 
@@ -199,8 +222,8 @@ export function sessionReportHtml(r) {
   h += `<h2>سجل الأحداث (${(r.events || []).length})</h2><div class="card" style="max-height:600px;overflow:auto"><table><tr><th>الوقت</th><th></th><th>الحدث</th></tr>${(r.events || []).map(e => `<tr><td class="mono">${clock(e.t)}</td><td class="mono dim">${rel(e.t, t0)}</td><td class="${e.kind || ''}">${esc(e.text)}</td></tr>`).join('')}</table></div>`;
 
   // ---------- 9. adapter log ----------
-  h += `<h2>سجل القطعة</h2><div class="card">إجمالي سطور الاتصال: ${r.logCount || 0}${Object.keys(r.logErr || {}).length ? ` · ردود خطأ: ${esc(Object.entries(r.logErr).map(([k, n]) => `${k}×${n}`).join('، '))}` : ' · بدون ردود خطأ'}
-    ${r.log?.length ? `<details><summary>آخر ${r.log.length} سطر</summary><div class="log">${esc(r.log.map(([t, l]) => `${new Date(t).toISOString().slice(11, 23)}  ${l}`).join('\n'))}</div></details>` : ''}</div>`;
+  h += `<h2>سجل القطعة</h2><div class="card">إجمالي سطور الاتصال: ${r.logCount || 0}${Object.keys(r.logErr || {}).length ? ` · ردود: ${esc(Object.entries(r.logErr).map(([k, n]) => `${k}×${n}`).join('، '))}<div class="dim">«NO DATA» أثناء مسح العناوين عادي: معناه ما فيه كمبيوتر على العنوان اللي انسأل.</div>` : ' · بدون ردود خطأ'}
+    ${r.log?.length ? `<details><summary>آخر ${r.log.length} سطر</summary><div class="log">${esc(r.log.map(([t, l]) => { const d = new Date(t); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}.${String(d.getMilliseconds()).padStart(3, '0')}  ${l}`; }).join('\n'))}</div></details>` : ''}</div>`;
 
   // ---------- what could not be read ----------
   h += `<h2>حدود القراءة</h2><div class="card"><ul>

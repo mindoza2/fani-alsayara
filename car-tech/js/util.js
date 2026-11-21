@@ -21,7 +21,7 @@ export function fmtNum(v, d = 0) {
 }
 export function fmtDate(t) {
   const d = new Date(t);
-  return d.toLocaleString('ar-SA-u-nu-latn', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  return d.toLocaleString('ar-SA-u-ca-gregory-nu-latn', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 export function fmtTime(ms) {
   const s = Math.floor(ms / 1000), m = Math.floor(s / 60);

@@ -125,7 +125,7 @@ export function correlate(ctx) {
     add({
       title: 'كفاءة الحفاز (الدبّة)', codes: cat, circuit: 'o2', score: others.length ? 0.5 : 0.65,
       causes: others.length ? [{ t: 'أعطال أخرى (خلطة/احتراق/حساس O2) تؤثر على الحفاز — أصلحها أولًا', p: 0.6 }, { t: 'الحفاز نفسه', p: 0.4 }] : [{ t: 'الحفاز ضعيف', p: 0.55 }, { t: 'حساس الأكسجين الخلفي', p: 0.25 }, { t: 'تسريب عادم', p: 0.2 }],
-      evidence: [`أكواد: ${list(cat)}`].concat(others.length ? [`أكواد مسبّبة محتملة: ${list(others)}`] : []).concat((ctx.mode06 || []).filter(r => r.mid >= 0x21 && r.mid <= 0x24).map(r => `Mode 6 ${r.midName}: ${r.value.toFixed(0)} (الحد ${r.max.toFixed(0)}) ${r.pass ? 'ناجح' : 'راسب'}`)),
+      evidence: [`أكواد: ${list(cat)}`].concat(others.length ? [`أكواد مسبّبة محتملة: ${list(others)}`] : []).concat((ctx.mode06 || []).filter(r => r.mid >= 0x21 && r.mid <= 0x24).map(r => { const f = v => (v == null ? '—' : Math.abs(v) < 10 ? v.toFixed(2) : v.toFixed(0)); return `اختبار الدبة الذاتي (Mode 6) ${r.midName}: ${f(r.value)} والحد ${f(r.min)}–${f(r.max)} ← ${r.pass ? 'ناجح' : 'راسب'}`; })),
       steps: [{ t: 'راقب الحساس الخلفي والمكينة حارّة', m: 'فولت O2 بعد الحفاز', e: 'ثابت تقريبًا (0.5–0.8V). إذا يتذبذب مثل الأمامي فالحفاز ضعيف' }],
     });
   }

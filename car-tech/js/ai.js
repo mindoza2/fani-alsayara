@@ -92,7 +92,7 @@ export async function localAnswer(q, app) {
   const lib = await store.all('ai');
   let best = null, bs = 0;
   for (const e of lib) { const s = sim(q, e.q); if (s > bs) { bs = s; best = e; } }
-  if (best && bs >= 0.35) parts.push(`\nمن مكتبة الأجوبة المحفوظة (سؤال مشابه بتاريخ ${new Date(best.t).toLocaleDateString('ar-SA-u-nu-latn')}):\n${best.a}`);
+  if (best && bs >= 0.35) parts.push(`\nمن مكتبة الأجوبة المحفوظة (سؤال مشابه بتاريخ ${new Date(best.t).toLocaleDateString('ar-SA-u-ca-gregory-nu-latn')}):\n${best.a}`);
   if (!parts.length) parts.push('بدون اتصال بالإنترنت أو مفتاح Claude، أستطيع شرح الأكواد (اكتب الكود مثل P0171)، تلخيص الأعطال والجاهزية والفولت، والبحث في الأجوبة المحفوظة سابقًا. لم أجد شيئًا مطابقًا لسؤالك.');
   return parts.join('\n');
 }

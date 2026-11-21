@@ -5,7 +5,7 @@
 // locked phone or a closed page still leaves a report up to the last moment.
 import { bus, uid, keepAwake } from './util.js';
 import { app, startLive, stopLive, liveRunning, liveToken, snapshotScan, vehDisplacement } from './core.js';
-import { PIDS, pidName } from './obd.js';
+import { PIDS, pidName, chargeRange } from './obd.js';
 import { store } from './store.js';
 import { describeDtc } from './dtcdb.js';
 import { analyze, analysisCtx, AREA } from './analyst.js';
@@ -114,7 +114,8 @@ function onScan({ running, label }) {
     const s = app.lastScan;
     rec.scans.push({ t: s.t, dtcs: s.dtcs, ecus: s.ecus, readiness: s.readiness, freeze: s.freeze, mode06: s.mode06, voltage: s.voltage, protocol: s.protocol, mode09: m09() });
     ev('scan', `فحص شامل: ${s.dtcs.length} عطل · ${s.ecus.filter(e => !['noresp', 'unreach'].includes(e.status)).length} كمبيوتر يرد`);
-    if (app.idents?.length && !rec.idents) { rec.idents = app.idents; ev('op', `قُرئت هوية ${app.idents.length} كمبيوتر`); }
+    if (app.idents?.length && !rec.idents) ev('op', `قُرئت هوية ${app.idents.length} كمبيوتر`);
+    setTimeout(() => { if (rec && !app.busy) { snapState(rec); lastSnap = Date.now(); save(true); } }, 200);
   }
   setTimeout(onData, 50);
 }
@@ -133,16 +134,31 @@ function onLog() {
   rec.logCount++;
   rec.log.push([Date.now(), line]); if (rec.log.length > MAXLOG) rec.log.splice(0, rec.log.length - MAXLOG);
   const m = String(line).match(/NO DATA|STOPPED|CAN ERROR|BUFFER FULL|BUS INIT|UNABLE TO CONNECT|BUS BUSY|FB ERROR|DATA ERROR|\?$/);
-  if (m) rec.logErr[m[0]] = (rec.logErr[m[0]] || 0) + 1;
+  if (m) { const k = m[0] === 'NO DATA' && app.busy ? 'NO DATA (أثناء المسح)' : m[0]; rec.logErr[k] = (rec.logErr[k] || 0) + 1; }
 }
 function onToast({ msg, kind }) { if (rec && msg) ev('msg', msg, { kind: kind === 'err' ? 'bad' : kind === 'warn' ? 'warn' : kind === 'ok' ? 'ok' : '' }); }
 function onVerdict(d) { if (!rec) return; rec.verdicts.push({ t: Date.now(), ...d }); ev('verdict', `نتيجة فحص «${d.title}»: ${d.verdict} (${AREA[d.area]?.[0] || ''})`, { kind: 'ok' }); }
 
 /* ------------------------------ saving & the end ------------------------------ */
 function plain(r) { const { seen, ...o } = r; return o; }
+// The car's latest state and the analysis of it, refreshed during the session: if the page dies,
+// the report still has them.
+function snapState(r) {
+  try {
+    const snap = snapshotScan();
+    r.final = { dtcs: snap.dtcs, ecus: snap.ecus, readiness: snap.readiness, freeze: snap.freeze, mode06: snap.mode06, voltage: snap.voltage, live: snap.live, mode09: m09() };
+    if (app.idents?.length) r.idents = app.idents;
+    r.trims = app.trims?.() || r.trims || null;
+    const a = analyze(analysisCtx(app, vehDisplacement()));
+    r.analysis = { plat: a.plat?.title || null, mods: a.mods, shared: a.shared, items: a.items.map(it => ({ title: it.title, codes: it.codes, safety: !!it.safety, areas: it.areas, causes: it.causes.slice(0, 5).map(c => ({ area: c.area, t: c.t, p: c.p, why: c.why })), evidence: it.evidence, path: it.path, loc: it.loc })) };
+    r.gmCount = gmSupported();
+  } catch (e) { console.warn('session snapshot', e); }
+}
+let lastSnap = 0;
 async function save(force = false) {
   if (!rec || (!dirty && !force)) return;
   dirty = false;
+  if (!app.busy && Date.now() - lastSnap > 30000) { lastSnap = Date.now(); snapState(rec); }
   try { await store.put('sessions', plain(rec)); } catch (e) { console.warn('session save', e); }
 }
 async function finalize(reason) {
@@ -155,15 +171,7 @@ async function finalize(reason) {
   r.status = 'done'; r.tEnd = Date.now(); r.endedBy = reason;
   r.events.push({ t: r.tEnd, type: 'end', text: `انتهى التسجيل — ${reason}` });
   // the car's last known state, and the analysis of everything found (the app still holds it here)
-  try {
-    const snap = snapshotScan();
-    r.final = { dtcs: snap.dtcs, ecus: snap.ecus, readiness: snap.readiness, freeze: snap.freeze, mode06: snap.mode06, voltage: snap.voltage, live: snap.live, mode09: m09() };
-    if (!r.idents && app.idents) r.idents = app.idents;
-    r.gmCount = gmSupported();
-    r.trims = app.trims?.() || null;
-    const a = analyze(analysisCtx(app, vehDisplacement()));
-    r.analysis = { plat: a.plat?.title || null, mods: a.mods, shared: a.shared, items: a.items.map(it => ({ title: it.title, codes: it.codes, safety: !!it.safety, areas: it.areas, causes: it.causes.slice(0, 5).map(c => ({ area: c.area, t: c.t, p: c.p, why: c.why })), evidence: it.evidence, path: it.path, loc: it.loc })) };
-  } catch (e) { console.warn('session final', e); }
+  snapState(r);
   r.stats = computeStats(r);
   try { await store.put('sessions', plain(r)); } catch (e) { console.warn(e); }
   bus.emit('session', { state: 'done', id: r.id });
@@ -228,7 +236,8 @@ export function computeStats(r) {
   S.series = Object.entries(r.series || {}).map(([k, s]) => {
     if (s.text) return { k, pid: s.pid, ecu: s.ecu, name: s.name, unit: s.unit, text: true, n: s.pts.length, values: [...new Set(s.pts.map(p => p[1]))].slice(0, 8), last: s.pts.at(-1)?.[1] };
     const v = s.pts.map(p => p[1]); if (!v.length) return null;
-    const rg = PIDS[s.pid]?.[7] || (s.gm ? gmPidInfo(s.pid)?.rg : null); let bad = 0, warn = 0, n = 0;
+    let rg = PIDS[s.pid]?.[7] || (s.gm ? gmPidInfo(s.pid)?.rg : null); let bad = 0, warn = 0, n = 0;
+    if (s.pid === 0x42) { const cr = chargeRange(r.vehicle); rg = { ok: cr.ok, warn: cr.warn, when: 'running', rvc: cr.rvc }; }
     if (rg) for (const [t, x] of s.pts) {
       if (rg.when === 'running' && !((at(rpm, t) ?? 0) > 400)) continue;
       if (rg.when === 'warm' && !((at(ect, t) ?? 0) > 75)) continue;

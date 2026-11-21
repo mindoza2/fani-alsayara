@@ -350,14 +350,15 @@ export class DemoTransport {
       const mids = [1, 2, 5, 6, 0x21, 0x22, 0x39, 0x3d, 0x41, 0x45, 0x81, 0x82, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9];
       if ([0, 0x20, 0x40, 0x60, 0x80, 0xa0, 0xc0, 0xe0].includes(m)) return [0x46, m, ...pidBitmap(mids.concat([0x20, 0x40, 0x60, 0x80, 0xa0].filter(x => x > m)), m)];
       if (!mids.includes(m)) return null;
-      const t = (tid, uas, val, mn, mx) => [tid, uas, val >> 8 & 255, val & 255, mn >> 8 & 255, mn & 255, mx >> 8 & 255, mx & 255];
-      if (m === 0x21) return [0x46, m, ...t(0x80, 0x01, 312, 0, 420)];
-      if (m === 0x22) return [0x46, m, ...t(0x80, 0x01, 371, 0, 420)];
-      if (m === 0x39) return [0x46, m, ...t(0x80, 0x29, 0xfff0 & 0x7fff, 0, 0x7fff)];
-      if (m === 0x81) return [0x46, m, ...t(0x80, 0x24, 17, 0, 25)];
-      if (m === 0x82) return [0x46, m, ...t(0x80, 0x24, 16, 0, 25)];
-      if (m >= 0xa1) { const cyl = m - 0xa1; const n = [0, 6, 2, 1, 0, 3, 9, 1, 2][cyl] || 0; return [0x46, m, ...t(0x0b, 0x24, n, 0, 65535), ...t(0x0c, 0x24, Math.round(n * 1.4), 0, 65535)]; }
-      return [0x46, m, ...t(0x01, 0x0a, 3650, 3000, 65535), ...t(0x02, 0x0a, 1210, 0, 1600)];
+      // like the real thing: every record starts with the MID
+      const t = (tid, uas, val, mn, mx) => [m, tid, uas, val >> 8 & 255, val & 255, mn >> 8 & 255, mn & 255, mx >> 8 & 255, mx & 255];
+      if (m === 0x21) return [0x46, ...t(0x80, 0x01, 312, 0, 420)];
+      if (m === 0x22) return [0x46, ...t(0x80, 0x01, 371, 0, 420)];
+      if (m === 0x39) return [0x46, ...t(0x80, 0x29, 0xfff0 & 0x7fff, 0, 0x7fff)];
+      if (m === 0x81) return [0x46, ...t(0x80, 0x24, 17, 0, 25)];
+      if (m === 0x82) return [0x46, ...t(0x80, 0x24, 16, 0, 25)];
+      if (m >= 0xa1) { const cyl = m - 0xa1; const n = [0, 6, 2, 1, 0, 3, 9, 1, 2][cyl] || 0; return [0x46, ...t(0x0b, 0x24, n, 0, 65535), ...t(0x0c, 0x24, Math.round(n * 1.4), 0, 65535)]; }
+      return [0x46, ...t(0x01, 0x0a, 3650, 3000, 65535), ...t(0x02, 0x0a, 1210, 0, 1600)];
     }
     if (mode === 0x08) { if (!ecm) return null; if (req[1] === 0) return [0x48, 0, ...pidBitmap([1], 0)]; if (req[1] === 1) return [0x48, 1, 0, 0, 0, 0, 0]; return null; }
     if (mode === 0x05) return null;

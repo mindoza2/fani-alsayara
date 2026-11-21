@@ -396,9 +396,11 @@ export class Obd {
         for (const m of r.msgs) {
           if (m.ecu !== ecu || m.neg || m.bytes[0] !== 0x46 || m.bytes[1] !== mid) continue;
           const b = m.bytes;
-          for (let i = 2; i + 7 < b.length; i += 8) {
-            const tid = b[i], uas = b[i + 1];
-            const val = uasVal(uas, b[i + 2], b[i + 3]), mn = uasVal(uas, b[i + 4], b[i + 5]), mx = uasVal(uas, b[i + 6], b[i + 7]);
+          // SAE J1979 on CAN: each test record repeats the MID — [MID TID UASID TV(2) MIN(2) MAX(2)]
+          for (let i = 1; i + 8 < b.length; i += 9) {
+            if (b[i] !== mid) break;
+            const tid = b[i + 1], uas = b[i + 2];
+            const val = uasVal(uas, b[i + 3], b[i + 4]), mn = uasVal(uas, b[i + 5], b[i + 6]), mx = uasVal(uas, b[i + 7], b[i + 8]);
             const pass = val.v >= mn.v && val.v <= mx.v;
             rows.push({ mid, tid, midName: midName(mid), tidName: tidName(mid, tid), value: val.v, min: mn.v, max: mx.v, unit: val.unit, known: val.known, pass });
           }

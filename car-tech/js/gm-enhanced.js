@@ -78,7 +78,7 @@ export function resetGm() { sup.clear(); fails.clear(); cursor = 0; }
 const IDS = { 0x90: 'رقم الهيكل VIN', 0x92: 'المورّد', 0x97: 'اسم النظام / نوع المكينة', 0x98: 'رمز الورشة / جهاز البرمجة', 0x99: 'تاريخ البرمجة', 0x9a: 'معرّف بيانات التشخيص', 0xb0: 'عنوان التشخيص', 0xb4: 'رقم التتبع', 0xc1: 'رقم برنامج 1', 0xc2: 'رقم برنامج 2', 0xc3: 'رقم برنامج 3', 0xc4: 'رقم برنامج 4', 0xc5: 'رقم برنامج 5', 0xc6: 'رقم برنامج 6', 0xcb: 'رقم القطعة النهائي (End model)', 0xcc: 'رقم القطعة الأساسي (Base model)' };
 const printable = b => b.length >= 3 && b.every(x => x >= 0x20 && x < 0x7f);
 function decodeId(did, b) {
-  if (!b.length) return '';
+  if (!b.length || b.every(x => x === 0xff) || b.every(x => x === 0)) return ''; // empty / never programmed
   if (did === 0x99 && b.length >= 4) { const h = b.slice(0, 4).map(hex2).join(''); return /^\d{8}$/.test(h) ? `${h.slice(0, 4)}-${h.slice(4, 6)}-${h.slice(6, 8)}` : h; }
   if (printable(b)) return String.fromCharCode(...b).trim();
   if (b.length === 4 && (did >= 0xc0 && did <= 0xcc)) return String(((b[0] << 24) >>> 0) + (b[1] << 16) + (b[2] << 8) + b[3]); // GM part number
@@ -114,7 +114,9 @@ export async function identify(step = () => {}, alive = () => {}) {
     // what the module scan already read from the other computers
     for (const e of app.ecus.values()) {
       if (!e.ident || e.std) continue;
-      const fields = Object.entries(e.ident).filter(([x]) => x !== 'noUds').map(([x, v]) => [/^1A/.test(x) ? IDS[parseInt(x.slice(2), 16)] || x : { 61840: 'VIN', 61847: 'اسم النظام', 61836: 'الرقم التسلسلي', 61845: 'إصدار البرنامج', 61831: 'رقم القطعة', 61834: 'المورّد' }[x] || x, String(v)]);
+      // a GM part number read as 4 raw bytes ("01 5A FD 13") is shown as the number it is
+      const pn = (x, v) => /^1AC[0-9A-C]$|^1ACB$|^1ACC$/i.test(x) && /^([0-9A-F]{2} ){3}[0-9A-F]{2}$/i.test(String(v)) ? String(parseInt(String(v).replace(/ /g, ''), 16)) : String(v);
+      const fields = Object.entries(e.ident).filter(([x, v]) => x !== 'noUds' && !/^(FF ?)+$|^(00 ?)+$/i.test(String(v))).map(([x, v]) => [/^1A/.test(x) ? IDS[parseInt(x.slice(2), 16)] || x : { 61840: 'VIN', 61847: 'اسم النظام', 61836: 'الرقم التسلسلي', 61845: 'إصدار البرنامج', 61831: 'رقم القطعة', 61834: 'المورّد' }[x] || x, pn(x, v)]);
       if (fields.length) out.push({ ecu: e.addr || e.key, name: e.name, fields });
     }
     app.idents = out;
