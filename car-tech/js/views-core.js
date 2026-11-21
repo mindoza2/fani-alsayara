@@ -10,6 +10,7 @@ import { correlate } from './diag.js';
 import { store, settings } from './store.js';
 import { go, speak, canSpeak } from './nav.js';
 import { PROTOCOLS } from './elm.js';
+import { moduleWiringHtml } from './views-wiring.js';
 
 const KINDS = { stored: ['مخزّن', 's-stored'], pending: ['معلّق', 's-pending'], perm: ['دائم', 's-perm'], history: ['سابق', 's-pending'] };
 export function dtcRow(code, kind, opts = {}) {
@@ -254,7 +255,7 @@ export function mapView(c) {
       ${ident.map(([k, v]) => `<dt>${esc(names[k] || k)}</dt><dd class="mono">${esc(v)}</dd>`).join('')}
       ${e.pids ? `<dt>قيم قياسية مدعومة</dt><dd>${e.pids.size}</dd>` : ''}</dl>
       ${e.note ? `<div class="hint" style="margin-top:10px">${esc(e.note)}</div>` : ''}${e.readError ? `<div class="warn" style="margin-top:10px">${esc(e.readError)}</div>` : ''}
-      <div style="margin-top:10px">${dtcListOf(e) || (e.ghost || e.status === 'unreach' ? '' : '<div class="ok-box">لا توجد أعطال مسجّلة في هذا الكمبيوتر</div>')}</div></div>`;
+      <div style="margin-top:10px">${dtcListOf(e) || (e.ghost || e.status === 'unreach' ? '' : '<div class="ok-box">لا توجد أعطال مسجّلة في هذا الكمبيوتر</div>')}</div>${moduleWiringHtml(e)}</div>`;
     $('#dRe', box)?.addEventListener('click', async ev => { ev.currentTarget.disabled = true; try { await rereadVerified(e); toast('تمت إعادة القراءة', 'ok'); } catch (er) { toast(er.message, 'err'); } draw(); });
     $('#dClr', box)?.addEventListener('click', () => clearOne(e, draw));
     if (scroll) box.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); // only when the person picked a computer

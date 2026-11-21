@@ -1,11 +1,11 @@
-// Phase-2 screens: guided diagnosis, services & bidirectional control, wiring diagrams,
+// Phase-2 screens: guided diagnosis, services & bidirectional control (wiring diagrams live in
+// views-wiring.js),
 // AI technician, reports & history, settings.
-import { $, $$, esc, bus, toast, modal, confirmAction, conf, fmtDate, hex2, hex3, hex4, download, shareFile, uid, safeImg } from './util.js';
+import { $, $$, esc, toast, modal, confirmAction, conf, fmtDate, hex2, hex3, hex4, download, shareFile, uid, safeImg } from './util.js';
 import { app, requireConn, snapshotScan, startLive, stopLive, loadLibrary, exclusive, vehDisplacement } from './core.js';
-import { PIDS, pidName, combineReadiness, readinessStats, chargeRange } from './obd.js';
+import { pidName, combineReadiness, readinessStats, chargeRange } from './obd.js';
 import { describeDtc } from './dtcdb.js';
-import { correlate, circuitFor, getCircuit, CIRCUIT_LIST, chainCheck } from './diag.js';
-import { wiringSvg, ROLE } from './widgets.js';
+import { correlate } from './diag.js';
 import { SIDS, STD_DIDS, routineBlocked, nrcText } from './network.js';
 import { store, settings, saveSettings } from './store.js';
 import { aiAvailable, buildContext, askClaude, localAnswer, saveAnswer } from './ai.js';
@@ -201,66 +201,6 @@ export function servicesView(c) {
     });
   };
   draw();
-}
-
-/* =========================== Wiring diagrams =========================== */
-export function wiringView(c) {
-  const p = params();
-  let id = p.c || (p.code ? circuitFor(p.code) : null) || (app.allDtcs().map(d => circuitFor(d.code)).find(Boolean)) || 'charging';
-  let sel = null; const offs = [];
-  const draw = () => {
-    const cir = getCircuit(id);
-    const codes = [...new Set(app.allDtcs().map(d => d.code))];
-    const live = { ...app.liveValues(), __volt: app.conn.voltage, running: app.running() };
-    const checks = cir ? chainCheck(id, live, app.conn.voltage, app.ctx().charge) : [];
-    c.innerHTML = `<div class="card" style="margin-bottom:14px"><div class="row wrap">
-      <select id="wSel" style="width:auto">${CIRCUIT_LIST().map(k => `<option value="${k}" ${k === id ? 'selected' : ''}>${esc(getCircuit(k)?.title || k)}</option>`).join('')}</select>
-      ${codes.length ? `<span class="small dim">من أعطال السيارة:</span>${codes.map(x => `<button class="btn sm ${circuitFor(x) === id ? 'primary' : ''}" data-code="${x}" ${circuitFor(x) ? '' : 'disabled title="لا يوجد مخطط لهذا الكود في المكتبة"'}>${x}</button>`).join('')}` : ''}
-      <span class="sp" style="flex:1"></span>${p.code && !circuitFor(p.code) ? `<span class="warn small">لا يوجد مخطط لـ ${esc(p.code)} في المكتبة</span>` : ''}</div></div>
-    ${cir ? `<div class="grid g3"><div class="card span2 wiring"><div class="card-head"><h2>${esc(cir.title)}</h2>${conf(cir.fromLibrary ? 'best' : 'est')}<span class="small dim">${cir.fromLibrary ? 'من المكتبة المرجعية المضافة' : 'مخطط نموذجي عام — ليس مخطط المصنّع لسيارتك'}</span></div>
-      <div id="wSvg">${wiringSvg(cir, { live, checks, selected: sel })}</div>
-      <div class="legend" style="margin-top:8px">${Object.entries(ROLE).map(([, [col, l]]) => `<span><i style="background:${col}"></i>${l}</span>`).join('')}</div>
-      <div class="small dim" style="margin-top:6px">مصادر المعلومات: القيم داخل المربعات قراءة حية ${conf('sure')} · المكوّنات والأسلاك من المكتبة ${conf('best')} · القيم المتوقعة والتقديرات ${conf('est')}</div></div>
-      <div class="card"><h2>التفاصيل</h2><div id="wDet"><div class="dim small">اضغط على أي سلك أو قطعة في الرسم</div></div>
-        <h3 style="margin-top:14px">أين تنكسر السلسلة؟ (من القراءات الحية)</h3>${checks.length ? checks.map(k => `<div class="${k.st === 'ok' ? 'ok-box' : k.st === 'warn' ? 'warn' : 'danger'} small" style="margin:6px 0">${esc(k.t)}</div>`).join('') + `<div class="small dim">${conf('est')} تفسير القراءة تقديري</div>` : `<div class="small dim">${connected() ? 'لا توجد قراءة حية مرتبطة بهذه الدائرة' : 'اتصل بالسيارة لتركيب القراءات الحية على الرسم'}</div>`}
-        ${cir.notes?.length ? `<h3 style="margin-top:14px">ملاحظات</h3><ul class="small">${cir.notes.map(n => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
-        <div class="hint small" style="margin-top:10px">أرقام الأطراف وألوان الأسلاك تختلف حسب السيارة ولا نعرضها إلا إن وُجدت في مكتبة مضافة. يمكنك إضافة مخططات من «الإعدادات ← المكتبة المرجعية».</div></div></div>`
-      : '<div class="card"><div class="empty">لا يوجد مخطط</div></div>'}`;
-    $('#wSel', c).onchange = e => { id = e.target.value; sel = null; draw(); };
-    $$('[data-code]', c).forEach(b => b.onclick = () => { const k = circuitFor(b.dataset.code); if (k) { id = k; sel = null; draw(); } });
-    $('#wSvg', c)?.addEventListener('click', e => {
-      const w = e.target.closest('.wire'), cp = e.target.closest('.wcomp');
-      if (w) { sel = 'w' + w.dataset.w; showWire(cir, +w.dataset.w, live, checks); }
-      else if (cp) { sel = 'c' + cp.dataset.c; showComp(cir, cp.dataset.c); }
-      else return;
-      $('#wSvg', c).innerHTML = wiringSvg(cir, { live, checks, selected: sel });
-    });
-  };
-  const showWire = (cir, k, live, checks) => {
-    const w = cir.wires[k]; const [col, role] = ROLE[w.role] || ROLE.sig;
-    const lv = w.pid != null ? live[w.pid] : w.vlive ? live.__volt : null;
-    const chk = checks.find(x => x.wire === k);
-    $('#wDet', c).innerHTML = `<div class="row"><span class="dot" style="background:${col}"></span><b>${esc(w.label)}</b>${conf(w.conf || 'best')}</div>
-      <dl class="kv" style="margin-top:8px"><dt>الوظيفة</dt><dd>${role}</dd><dt>نقطة القياس</dt><dd>${esc(w.measure || '—')}</dd><dt>القيمة المتوقعة</dt><dd>${esc(w.expect || '—')} ${conf('est')}</dd>
-      ${w.pid != null ? `<dt>قراءة الكمبيوتر</dt><dd class="num">${lv != null ? lv.toFixed?.(2) + ' ' + (PIDS[w.pid]?.[1] || '') : '—'} ${lv != null ? conf('sure') : ''}</dd>` : ''}
-      <dt>رقم الطرف / اللون</dt><dd class="dim">${esc(w.pin || 'غير موثّق — راجع دليل المصنّع')}</dd></dl>
-      ${chk ? `<div class="${chk.st === 'ok' ? 'ok-box' : 'warn'} small" style="margin-top:8px">${esc(chk.t)}</div>` : ''}
-      ${w.role === 'sig' && /وسادة|إطلاق/.test(w.label) ? '<div class="danger small" style="margin-top:8px">لا تقِس هذه الدائرة بالملتيميتر</div>' : ''}`;
-  };
-  const showComp = (cir, cid) => {
-    const x = cir.comps.find(q => q.id === cid);
-    const ws = cir.wires.map((w, i) => ({ w, i })).filter(({ w }) => (w.a || 'ecm') === cid || (w.b || 'c') === cid);
-    $('#wDet', c).innerHTML = `<b>${esc(x.label)}</b><div class="small dim">${{ ecm: 'كمبيوتر', part: 'قطعة', fuse: 'فيوز', relay: 'ريليه', batt: 'بطارية', dlc: 'فيش الفحص' }[x.kind] || ''}</div><h3 style="margin-top:10px">الأسلاك المتصلة</h3><ul class="small">${ws.map(({ w }) => `<li>${esc(w.label)} — ${esc(w.expect || '')}</li>`).join('')}</ul>`;
-  };
-  if (connected()) {
-    const sup = app.pidSupport.get(app.primaryEcu()) || new Set();
-    const pids = [0x05, 0x0f, 0x11, 0x0b, 0x10, 0x14, 0x0c, 0x07, 0x42, 0x2e].filter(q => sup.has(q));
-    startLive({ fast: pids, rateMs: 800 });
-    let last = 0;
-    offs.push(bus.on('live', () => { if (Date.now() - last > 2000 && !sel) { last = Date.now(); draw(); } }));
-  }
-  draw();
-  return () => { offs.forEach(f => f()); stopLive(); };
 }
 
 /* =========================== AI technician =========================== */

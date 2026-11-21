@@ -281,11 +281,11 @@ const num = (v, d = 0) => (v !== '' && v != null && Number.isFinite(+v) ? +v : d
 const str = v => (v == null ? undefined : String(v));
 function cleanCircuit(c) {
   if (!c || typeof c !== 'object' || !Array.isArray(c.comps) || !Array.isArray(c.wires) || !c.comps.length) return null;
-  const comps = c.comps.filter(x => x && x.id != null).map(x => ({ id: String(x.id), label: String(x.label ?? x.id), kind: String(x.kind || 'part'), x: num(x.x), y: num(x.y), w: num(x.w, 150), h: num(x.h, 60) }));
+  const comps = c.comps.filter(x => x && x.id != null).map(x => ({ id: String(x.id), label: String(x.label ?? x.id), sub: str(x.sub), kind: String(x.kind || 'part'), x: num(x.x), y: num(x.y), w: num(x.w, 150), h: num(x.h, 60) }));
   const wires = c.wires.filter(w => w && typeof w === 'object').map((w, i) => ({
     i: num(w.i, i), role: String(w.role || 'sig'), label: String(w.label || ''), expect: String(w.expect ?? ''), measure: String(w.measure ?? ''),
     conf: ['sure', 'best', 'est'].includes(w.conf) ? w.conf : 'best', pid: w.pid != null && Number.isFinite(+w.pid) ? +w.pid : undefined,
-    a: str(w.a), b: str(w.b), pin: str(w.pin), vlive: !!w.vlive,
+    a: str(w.a), b: str(w.b), pin: str(w.pin), vlive: !!w.vlive, quiet: !!w.quiet, y: w.y != null && Number.isFinite(+w.y) ? +w.y : undefined,
   }));
   return { title: String(c.title || 'مخطط من المكتبة'), comps, wires, notes: Array.isArray(c.notes) ? c.notes.map(String) : [] };
 }

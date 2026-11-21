@@ -7,6 +7,7 @@ import { chargeRange } from './obd.js';
 import * as V1 from './views-core.js';
 import * as V2 from './views-live.js';
 import * as V3 from './views-tools.js';
+import * as V4 from './views-wiring.js';
 
 export const ROUTES = [
   { id: 'dash', ic: '◉', t: 'لوحة القيادة', g: 'الأساس', v: V1.dashboard },
@@ -18,7 +19,7 @@ export const ROUTES = [
   { id: 'live', ic: '◔', t: 'البيانات الحية', g: 'الأساس', v: V2.liveView },
   { id: 'diag', ic: '✦', t: 'التشخيص الموجّه', g: 'التحليل', v: V3.diagView },
   { id: 'trip', ic: '⏱', t: 'مسجّل المشوار', g: 'التحليل', v: V2.tripView },
-  { id: 'wiring', ic: '⌇', t: 'المخططات الكهربائية', g: 'التحليل', v: V3.wiringView },
+  { id: 'wiring', ic: '⌇', t: 'المخططات الكهربائية', g: 'التحليل', v: V4.wiringView },
   { id: 'twin', ic: '◈', t: 'المتابعة التنبّؤية', g: 'التحليل', v: V2.twinView },
   { id: 'services', ic: '⚙', t: 'الخدمات والتحكّم', g: 'الأدوات', v: V3.servicesView },
   { id: 'ai', ic: '✉', t: 'اسأل الفني', g: 'الأدوات', v: V3.aiView },

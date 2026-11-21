@@ -156,6 +156,7 @@ export function wiringSvg(c, { live = {}, checks = [], selected = null } = {}) {
       const off = (k - (n - 1) / 2) * 10;
       y1 = a.y + a.h / 2 + off; y2 = b.y + b.h / 2 + off;
       if (Math.abs(a.x - b.x) < 60) { x1 = a.x + a.w / 2 + off; y1 = a.y < b.y ? a.y + a.h : a.y; x2 = b.x + b.w / 2 + off; y2 = a.y < b.y ? b.y : b.y + b.h; }
+      if (w.y != null) { y1 = y2 = +w.y; } // a fixed straight run (one row per wire)
     }
     const [col] = ROLE[w.role] || ROLE.sig;
     const chk = checks.find(x => x.wire === k);
@@ -170,7 +171,8 @@ export function wiringSvg(c, { live = {}, checks = [], selected = null } = {}) {
     const ly = vert ? (y1 + y2) / 2 : Math.abs(y1 - y2) < 1 ? y1 - 8 : y2 - 8;
     const lx = vert ? x1 + 12 : Math.abs(y1 - y2) < 1 ? mx : (mx + x2) / 2;
     const anc = vert ? 'end' : 'middle'; // svg text is rtl: "end" = grows to the right of x
-    labels += `<g class="wire" data-w="${k}"><text x="${lx}" y="${ly}" fill="${col}" font-size="11.5" text-anchor="${anc}" paint-order="stroke" stroke="#0a101a" stroke-width="4">${esc(w.label)}</text>`;
+    // quiet wires (a bus drawn as many segments) show their label only when picked
+    labels += `<g class="wire" data-w="${k}">${w.quiet && !sel ? '' : `<text x="${lx}" y="${ly}" fill="${col}" font-size="11.5" text-anchor="${anc}" paint-order="stroke" stroke="#0a101a" stroke-width="4">${esc(w.label)}</text>`}`;
     const lv = w.pid != null ? live[w.pid] : w.vlive ? live.__volt : null;
     if (lv != null || chk) {
       const txt = lv != null ? (typeof lv === 'number' ? lv.toFixed(Math.abs(lv) < 20 ? 2 : 0) : lv) : '';
@@ -185,7 +187,7 @@ export function wiringSvg(c, { live = {}, checks = [], selected = null } = {}) {
     const st = isEcm ? '#2f7bff' : x.kind === 'fuse' || x.kind === 'relay' ? '#ffb547' : x.kind === 'batt' ? '#ff5468' : x.kind === 'dlc' ? '#33e39b' : '#3de0ff';
     const sel = selected === 'c' + x.id;
     s += `<g class="wcomp" data-c="${esc(x.id)}"><rect x="${x.x}" y="${x.y}" width="${x.w}" height="${x.h}" rx="12" fill="${fill}" stroke="${st}" stroke-width="${sel ? 2.6 : 1.4}"/>
-    <text x="${x.x + x.w / 2}" y="${x.y + 22}" fill="#e6eefb" font-size="12.5" font-weight="600" text-anchor="middle">${esc(x.label)}</text></g>`;
+    <text x="${x.x + x.w / 2}" y="${x.y + 22}" fill="#e6eefb" font-size="12.5" font-weight="600" text-anchor="middle">${esc(x.label)}</text>${x.sub ? `<text x="${x.x + x.w / 2}" y="${x.y + 40}" fill="#9fb0c8" font-size="10.5" text-anchor="middle">${esc(x.sub)}</text>` : ''}</g>`;
   }
   return s + labels + '</svg>';
 }
