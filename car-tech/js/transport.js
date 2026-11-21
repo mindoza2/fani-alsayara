@@ -249,6 +249,7 @@ export class DemoTransport {
         if (did === 0xf18c) return [0x62, 0xf1, 0x8c, ...asc('SN' + hex3(id) + '7731')];
         if (did === 0xf195) return [0x62, 0xf1, 0x95, ...asc('SW 24.11')];
         if (did === 0x4001 && id === 0x641) return [0x62, 0x40, 0x01, 0x03, 0xe8];
+        if (did >= 0x5005 && did <= 0x5008 && id === 0x641) { const kpa = [245, 248, 238, 251][did - 0x5005] * 16; return [0x62, req[1], req[2], kpa >> 8, kpa & 255]; }
         return neg(0x31);
       }
       case 0x27: return req[1] === 1 ? [0x67, 0x01, 0x3a, 0x9c] : neg(0x35);
@@ -273,6 +274,40 @@ export class DemoTransport {
     const TCM_PIDS = [1, 0x0d, 0x1c, 0x20, 0x40, 0x42];
     const pids = ecm ? ECM_PIDS : TCM_PIDS;
     const v = (pid) => this.pidVal(pid, L, ecm);
+    // GM manufacturer readings ($22) and identification ($1A) on the physical addresses
+    if (mode === 0x22 && this.s.header !== 0x7df) {
+      const did = (req[1] << 8) | req[2], r = (...b) => [0x62, req[1], req[2], ...b], r16 = x => r((x >> 8) & 0xff, x & 0xff), no = [0x7f, 0x22, 0x31];
+      if (ecm) {
+        if (did === 0x1470) return r(L.running ? Math.round((190 + (L.rpm - 700) * 0.09) / 4) : 0);
+        if (did === 0x1154) return r(Math.round(L.oil) + 40);
+        if (did === 0x1141) return r(Math.round(L.volt * 10));
+        if (did === 0x1192) return r(L.running ? 52 : 0);
+        if (did === 0x119e) return r(147);
+        if (did === 0x11a6) return r(0);
+        if (did === 0x1161) return r(L.amb + 40);
+        if (did === 0x1564) return r(0x62);
+        if (did >= 0x1193 && did <= 0x119a) return r16(Math.round((L.running ? 2.4 + (did & 3) * 0.05 + L.load / 60 : 0) * 65.5));
+        if ((did >= 0x1205 && did <= 0x1208) || (did >= 0x11ea && did <= 0x11ed)) return r(did === 0x1207 && L.running ? 2 : 0);
+        if ((did >= 0x1201 && did <= 0x1204) || (did >= 0x11f8 && did <= 0x11fb)) return r16(did === 0x1203 ? 37 : 4);
+        return no;
+      }
+      if (did === 0x1940) return r(Math.round(Math.max(40, L.oil - 8)) + 40);
+      if (did === 0x199a) return r(L.speed > 5 ? 5 : 1);
+      if (did === 0x1991) return r16(((L.speed > 5 ? 3 : L.running ? 610 : 0) * 8) & 0xffff);
+      if (did === 0x1992) return r(22);
+      if (did === 0x199e || did === 0x199f) return r(did === 0x199e ? 46 : 45);
+      return no;
+    }
+    if (mode === 0x1a && this.s.header !== 0x7df) {
+      const did = req[1], a = t => [0x5a, did, ...asc(t)], n4 = x => [0x5a, did, (x >>> 24) & 255, (x >> 16) & 255, (x >> 8) & 255, x & 255];
+      if (did === 0x90 && ecm) return a(DEMO_VIN);
+      if (did === 0x97) return a(ecm ? 'DEMO-ENGINE' : 'DEMO-TRANS');
+      if (did === 0x92) return a('DEMO');
+      if (did === 0x99) return [0x5a, did, 0x20, 0x12, 0x03, 0x14];
+      if (did === 0xc1) return n4(ecm ? 12650001 : 24250002);
+      if (did === 0xcb) return n4(ecm ? 12650099 : 24250099);
+      return [0x7f, 0x1a, 0x31];
+    }
     if (mode === 0x01) {
       const out = [0x41];
       for (const pid of req.slice(1)) {

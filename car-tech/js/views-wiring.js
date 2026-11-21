@@ -52,6 +52,20 @@ export function wiringView(c) {
   let id = (plat && p.code && forCode(p.code)) || p.c || (p.code ? forCode(p.code) : null) || app.allDtcs().map(d => forCode(d.code)).find(Boolean) || (plat ? 'dlc' : 'charging');
   if (!ids().includes(id)) id = ids().includes('srs') && /SDM/.test(id) ? 'srs' : ids()[0];
 
+  const checksHtml = (cir, checks) => checks.length ? checks.map(k => `<div class="${k.st === 'ok' ? 'ok-box' : k.st === 'warn' ? 'warn' : 'danger'} small" style="margin:6px 0">${esc(k.t)}</div>`).join('') + `<div class="small dim">${conf('est')} تفسير القراءة تقديري</div>` : `<div class="small dim">${connected() ? (cir.vehicle && /canbus|lsgmlan|mod:/.test(id) && !app.modulesScanned ? 'سوِّ «مسح سريع للكمبيوترات» من خريطة الشبكة ليظهر هنا مين يرد ومين لا' : 'لا توجد قراءة حية مرتبطة بهذه الدائرة') : 'اتصل بالسيارة لتركيب القراءات الحية على الرسم'}</div>`;
+  const evalNow = cir => {
+    const live = { ...app.liveValues(), __volt: app.conn.voltage, running: app.running() };
+    const codes = [...new Set(app.allDtcs().map(d => d.code))];
+    const checks = cir ? [...(cir.vehicle ? gmChecks(id, cir, { ecus: [...app.ecus.values()], volt: app.conn.voltage, connected: connected(), codes }) : []), ...chainCheck(id, live, app.conn.voltage, app.ctx().charge)] : [];
+    return { live, checks };
+  };
+  // live readings refresh only the drawing and the checks (the rest of the page stays as it is)
+  const drawLive = () => {
+    const cir = get(id), box = $('#wSvg', c); if (!cir || !box) return;
+    const { live, checks } = evalNow(cir);
+    box.innerHTML = wiringSvg(cir, { live, checks, selected: sel });
+    const ch = $('#wChecks', c); if (ch) ch.innerHTML = checksHtml(cir, checks);
+  };
   const draw = () => {
     const cir = get(id);
     const codes = [...new Set(app.allDtcs().map(d => d.code))];
@@ -79,7 +93,8 @@ export function wiringView(c) {
         ? `أسماء الأسلاك والفيوزات ونقاط الأرضي ومواقع الكمبيوترات ${srcBadge('oem')} · أرقام أطراف الشبكة وألوانها ${srcBadge('plat')} · القيم داخل المربعات قراءة حية ${conf('sure')} · القيم المتوقعة ${srcBadge('est')}`
         : `مصادر المعلومات: القيم داخل المربعات قراءة حية ${conf('sure')} · المكوّنات والأسلاك من المكتبة ${conf('best')} · القيم المتوقعة والتقديرات ${conf('est')}`}</div></div>
       <div class="card"><h2>التفاصيل</h2><div id="wDet"><div class="dim small">اضغط على أي سلك أو قطعة في الرسم</div></div>
-        <h3 style="margin-top:14px">أين تنكسر السلسلة؟ (من السيارة الآن)</h3>${checks.length ? checks.map(k => `<div class="${k.st === 'ok' ? 'ok-box' : k.st === 'warn' ? 'warn' : 'danger'} small" style="margin:6px 0">${esc(k.t)}</div>`).join('') + `<div class="small dim">${conf('est')} تفسير القراءة تقديري</div>` : `<div class="small dim">${connected() ? (cir.vehicle && /canbus|lsgmlan|mod:/.test(id) && !app.modulesScanned ? 'سوِّ «مسح سريع للكمبيوترات» من خريطة الشبكة ليظهر هنا مين يرد ومين لا' : 'لا توجد قراءة حية مرتبطة بهذه الدائرة') : 'اتصل بالسيارة لتركيب القراءات الحية على الرسم'}</div>`}
+        <h3 style="margin-top:14px">أين تنكسر السلسلة؟ (من السيارة الآن)</h3><div id="wChecks">${checksHtml(cir, checks)}</div>
+        
         ${cir.notes?.length ? `<h3 style="margin-top:14px">ملاحظات</h3><ul class="small">${cir.notes.map(n => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
         ${cir.vehicle ? '' : '<div class="hint small" style="margin-top:10px">أرقام الأطراف وألوان الأسلاك تختلف حسب السيارة ولا نعرضها إلا إن وُجدت في مكتبة مضافة. يمكنك إضافة مخططات من «الإعدادات ← المكتبة المرجعية».</div>'}</div></div>`
       : '<div class="card"><div class="empty">لا يوجد مخطط</div></div>'}
@@ -159,7 +174,7 @@ export function wiringView(c) {
     const pids = [0x05, 0x0f, 0x11, 0x0b, 0x10, 0x14, 0x0c, 0x07, 0x42, 0x2e].filter(x => sup.has(x));
     if (pids.length) tok = startLive({ fast: pids, rateMs: 800 });
     let last = 0;
-    offs.push(bus.on('live', () => { if (Date.now() - last > 2000 && !sel && document.activeElement?.id !== 'wQ') { last = Date.now(); draw(); } }));
+    offs.push(bus.on('live', () => { if (Date.now() - last > 2000 && !sel) { last = Date.now(); drawLive(); } }));
   }
   offs.push(bus.on('data', () => { if (!app.scanning && !sel && document.activeElement?.id !== 'wQ') draw(); }));
   draw();

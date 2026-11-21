@@ -9,6 +9,7 @@ import { PIDS, pidName } from './obd.js';
 import { store } from './store.js';
 import { describeDtc } from './dtcdb.js';
 import { analyze, analysisCtx, AREA } from './analyst.js';
+import { readGmBatch, identify, gmPidInfo, resetGm, gmSupported } from './gm-enhanced.js';
 
 let rec = null, tok = null, timers = [], offs = [], wake = null, dirty = false, pauseTimer = null;
 const MAXLOG = 3000;
@@ -25,10 +26,13 @@ export const session = {
 };
 
 function ev(type, text, extra) { if (!rec) return; rec.events.push({ t: Date.now(), type, text, ...(extra || {}) }); dirty = true; }
+// every value any computer announces (engine first), not only the engine computer's
 const pidsToRecord = () => {
-  const sup = app.pidSupport.get(app.primaryEcu?.()) || new Set();
-  return [...sup].filter(dataPid);
+  const pe = app.primaryEcu?.(), all = new Set(app.pidSupport.get(pe) || []);
+  for (const [ecu, set] of app.pidSupport) if (ecu !== pe) for (const p of set) all.add(p);
+  return [...all].filter(dataPid);
 };
+const m09 = () => (app.mode09 ? [...app.mode09.entries()].map(([ecu, info]) => ({ ecu, ...info })) : []);
 
 function start(reason = 'يدويًا') {
   if (rec || !app.conn.ready && app.conn.state !== 'adapter') return;
@@ -40,8 +44,13 @@ function start(reason = 'يدويًا') {
   ev('start', `بدأ التسجيل تلقائيًا — ${reason}`);
   if (app.conn.voltage) rec.volt.push([Date.now(), r3(app.conn.voltage)]);
   wake = keepAwake();
-  // every live poll also reads the rest of the car's values now and then, so nothing is missed
+  // every live poll also reads the rest of the car's values now and then, so nothing is missed,
+  // and on GM cars the manufacturer readings (oil pressure, transmission temperature, gear…)
   app.liveExtra = () => pidsToRecord();
+  resetGm();
+  if (app.vehicle.group === 'GM') app.liveExtraRead = () => readGmBatch(3);
+  // each full scan of the session also reads who each computer is (part numbers, software, date)
+  app.afterScanHook = async (step, alive) => { step(0, 'قراءة هوية الكمبيوترات…'); await identify(step, alive); };
   timers.push(setInterval(ensurePolling, 1500), setInterval(() => save(), 20000), setInterval(() => bus.emit('session', { state: 'rec' }), 1000));
   ensurePolling(); save();
   bus.emit('session', { state: 'rec' });
@@ -60,7 +69,7 @@ function onLive() {
   for (const [k, v] of app.live) {
     if (!v?.t || v.t <= (rec.seen[k] || 0)) continue;
     rec.seen[k] = v.t;
-    const s = rec.series[k] ||= { pid: v.pid, ecu: v.ecu, name: pidName(v.pid), unit: v.unit || PIDS[v.pid]?.[1] || '', pts: [], text: v.value == null };
+    const s = rec.series[k] ||= { pid: v.pid, ecu: v.ecu, name: v.gm ? v.name : pidName(v.pid), unit: v.unit || PIDS[v.pid]?.[1] || '', pts: [], text: v.value == null, ...(v.gm ? { gm: true, conf: v.conf, mod: v.mod } : {}) };
     const last = s.pts[s.pts.length - 1];
     if (v.value != null) { const x = r3(v.value); if (!last || last[1] !== x || v.t - last[0] >= 5000) s.pts.push([v.t, x]); }
     else if (v.text != null && (!last || last[1] !== v.text)) s.pts.push([v.t, String(v.text)]);
@@ -103,8 +112,9 @@ function onScan({ running, label }) {
   ev('op', `انتهى: ${o?.label || 'عملية'}${o ? ` (${Math.round((Date.now() - o.t) / 1000)} ث)` : ''}`);
   if (app.lastScan && !rec.scans.some(s => s.t === app.lastScan.t)) {
     const s = app.lastScan;
-    rec.scans.push({ t: s.t, dtcs: s.dtcs, ecus: s.ecus, readiness: s.readiness, freeze: s.freeze, mode06: s.mode06, voltage: s.voltage, protocol: s.protocol });
+    rec.scans.push({ t: s.t, dtcs: s.dtcs, ecus: s.ecus, readiness: s.readiness, freeze: s.freeze, mode06: s.mode06, voltage: s.voltage, protocol: s.protocol, mode09: m09() });
     ev('scan', `فحص شامل: ${s.dtcs.length} عطل · ${s.ecus.filter(e => !['noresp', 'unreach'].includes(e.status)).length} كمبيوتر يرد`);
+    if (app.idents?.length && !rec.idents) { rec.idents = app.idents; ev('op', `قُرئت هوية ${app.idents.length} كمبيوتر`); }
   }
   setTimeout(onData, 50);
 }
@@ -139,7 +149,7 @@ async function finalize(reason) {
   if (!rec) return;
   const r = rec; rec = null;
   timers.forEach(clearInterval); timers = []; clearTimeout(pauseTimer);
-  app.liveExtra = null;
+  app.liveExtra = null; app.liveExtraRead = null; app.afterScanHook = null;
   if (tok) { stopLive(tok); tok = null; }
   wake?.release(); wake = null;
   r.status = 'done'; r.tEnd = Date.now(); r.endedBy = reason;
@@ -147,7 +157,9 @@ async function finalize(reason) {
   // the car's last known state, and the analysis of everything found (the app still holds it here)
   try {
     const snap = snapshotScan();
-    r.final = { dtcs: snap.dtcs, ecus: snap.ecus, readiness: snap.readiness, freeze: snap.freeze, mode06: snap.mode06, voltage: snap.voltage, live: snap.live };
+    r.final = { dtcs: snap.dtcs, ecus: snap.ecus, readiness: snap.readiness, freeze: snap.freeze, mode06: snap.mode06, voltage: snap.voltage, live: snap.live, mode09: m09() };
+    if (!r.idents && app.idents) r.idents = app.idents;
+    r.gmCount = gmSupported();
     r.trims = app.trims?.() || null;
     const a = analyze(analysisCtx(app, vehDisplacement()));
     r.analysis = { plat: a.plat?.title || null, mods: a.mods, shared: a.shared, items: a.items.map(it => ({ title: it.title, codes: it.codes, safety: !!it.safety, areas: it.areas, causes: it.causes.slice(0, 5).map(c => ({ area: c.area, t: c.t, p: c.p, why: c.why })), evidence: it.evidence, path: it.path, loc: it.loc })) };
@@ -216,15 +228,15 @@ export function computeStats(r) {
   S.series = Object.entries(r.series || {}).map(([k, s]) => {
     if (s.text) return { k, pid: s.pid, ecu: s.ecu, name: s.name, unit: s.unit, text: true, n: s.pts.length, values: [...new Set(s.pts.map(p => p[1]))].slice(0, 8), last: s.pts.at(-1)?.[1] };
     const v = s.pts.map(p => p[1]); if (!v.length) return null;
-    const rg = PIDS[s.pid]?.[7]; let bad = 0, warn = 0, n = 0;
+    const rg = PIDS[s.pid]?.[7] || (s.gm ? gmPidInfo(s.pid)?.rg : null); let bad = 0, warn = 0, n = 0;
     if (rg) for (const [t, x] of s.pts) {
       if (rg.when === 'running' && !((at(rpm, t) ?? 0) > 400)) continue;
       if (rg.when === 'warm' && !((at(ect, t) ?? 0) > 75)) continue;
       n++;
       if (x < rg.warn[0] || x > rg.warn[1]) bad++; else if (x < rg.ok[0] || x > rg.ok[1]) warn++;
     }
-    return { k, pid: s.pid, ecu: s.ecu, name: s.name, unit: s.unit, n: v.length, min: Math.min(...v), max: Math.max(...v), avg: v.reduce((a, b) => a + b, 0) / v.length, last: v[v.length - 1], judged: n, bad, warn, range: rg || null };
-  }).filter(Boolean).sort((a, b) => a.pid - b.pid);
+    return { k, pid: s.pid, ecu: s.ecu, name: s.name, unit: s.unit, gm: !!s.gm, conf: s.conf || null, n: v.length, min: Math.min(...v), max: Math.max(...v), avg: v.reduce((a, b) => a + b, 0) / v.length, last: v[v.length - 1], judged: n, bad, warn, range: rg || null };
+  }).filter(Boolean).sort((a, b) => (a.gm - b.gm) || (typeof a.pid === 'number' && typeof b.pid === 'number' ? a.pid - b.pid : String(a.pid).localeCompare(String(b.pid))));
   S.codes = Object.keys(r.codes || {}).length;
   return S;
 }

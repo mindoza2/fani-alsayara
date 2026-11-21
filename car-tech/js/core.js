@@ -38,7 +38,7 @@ export const app = {
     for (const v of this.live.values()) if (v.value != null && v.t > fresh && (o[v.pid] == null || v.ecu === pe)) o[v.pid] = v.value;
     return o;
   },
-  liveSnapshot() { return [...this.live.values()].filter(v => v.value != null).slice(0, 30).map(v => ({ name: PIDS[v.pid]?.[0] || v.pid, text: v.text, unit: v.unit })); },
+  liveSnapshot() { return [...this.live.values()].filter(v => v.value != null).slice(0, 40).map(v => ({ name: PIDS[v.pid]?.[0] || v.name || v.pid, text: v.text, unit: v.unit })); },
   primaryEcu() { const k = [...this.pidSupport.keys()].sort(); return k.includes('7E8') ? '7E8' : k[0]; },
   running() { const v = this.liveValues(); return (v[0x0c] || 0) > 400; },
   ctx() { const v = this.liveValues(); return { running: (v[0x0c] || 0) > 400, warm: (v[0x05] ?? 0) > 70 || (v[0x1f] || 0) > 600, charge: chargeRange(this.vehicle) }; },
@@ -142,7 +142,7 @@ export async function disconnect() {
 function resetScanState() {
   app.session = (app.session || 0) + 1; // an operation from an older session never writes into this one
   app.ecus = new Map(); app.readiness = new Map(); app.freeze = new Map(); app.mode06 = null; app.mode09 = null; app.readyExtra = null;
-  app.lastScan = null; app.live = new Map(); app.hist = new Map(); app.samples = []; app.pidSupport = new Map(); app.modulesScanned = false; app.scanNote = null;
+  app.lastScan = null; app.live = new Map(); app.hist = new Map(); app.samples = []; app.pidSupport = new Map(); app.modulesScanned = false; app.scanNote = null; app.idents = null;
 }
 function resetVehicleState() { app.vehicle = {}; resetScanState(); }
 async function afterConnect(ok, progress) {
@@ -247,6 +247,7 @@ export function setVehicle(v) {
 }
 
 /* ---------------- full scan ---------------- */
+const job_lost = e => /انقطع الاتصال|أُلغيت العملية/.test(e?.message || '');
 // Every full scan starts from zero: nothing from the previous scan leaks into the new result.
 // If it cannot finish (no answer, link lost, cancelled) the previous result is put back untouched.
 export async function fullScan({ modules = true, fullRange = false } = {}) {
@@ -271,6 +272,8 @@ export async function fullScan({ modules = true, fullRange = false } = {}) {
         await scanModules({ fullRange, progress: (p, t) => step(0.6 + p * 0.35, t) }); alive();
       }
       finalizeStatuses();
+      // extra reads that belong to the scan while a session is recorded (who each computer is)
+      if (app.afterScanHook) { try { await app.afterScanHook((p, t) => step(0.95 + p * 0.02, t), alive); } catch (e) { if (job_lost(e)) throw e; console.warn(e); } alive(); }
     } catch (e) {
       if (app.session === session) Object.assign(app, backup);
       try { await app.mods?.done(); } catch {}
@@ -450,6 +453,15 @@ export function startLive({ fast = [], slow = [], onTick = () => {}, rateMs = 0 
           app.live.set(`${v.ecu}:${v.pid}`, { ...v, t: now });
           if (v.value != null) {
             const k = `${v.ecu}:${v.pid}`; const h = app.hist.get(k) || []; h.push([now, v.value]); if (h.length > 600) h.splice(0, h.length - 600); app.hist.set(k, h);
+          }
+        }
+        // manufacturer readings (e.g. GM Mode $22) while a session is recorded — a few per tick
+        if (app.liveExtraRead && n % 3 === 1) {
+          const ex = await app.liveExtraRead();
+          if (token.stop) return;
+          for (const e of ex) {
+            app.live.set(e.key, { ...e, t: now });
+            const h = app.hist.get(e.key) || []; h.push([now, e.value]); if (h.length > 600) h.splice(0, h.length - 600); app.hist.set(e.key, h);
           }
         }
         if (n % 3 === 0 && app.conn.elm?.info.caps.voltage) { const vv = await app.conn.elm.voltage(); if (vv != null) { app.conn.voltage = vv; bus.emit('volt', vv); } }
