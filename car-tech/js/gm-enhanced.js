@@ -21,12 +21,10 @@ export const GM_PIDS = [
   P(ECM, 0x11A6, 'سحب التوقيت بسبب الطَّرق (Knock retard)', '°', b => b[0] * 0.09, 'est', { d: 'كم درجة يأخر الكمبيوتر الشرارة لأنه سمع طرق. المقياس غير مؤكد — المهم: صفر طبيعي، وأي رقم ثابت عالي يعني طرق أو حساس طرق يلقط ضجيج.' }),
   P(ECM, 0x1161, 'حرارة الجو (من حساس السيارة)', '°C', b => b[0] - 40, 'est'),
   P(ECM, 0x1564, 'ضغط غاز المكيف — الجهة العالية', 'psi', b => b[0] * 2.02, 'est', { d: 'ضغط الفريون في الجهة العالية والمكيف شغال (يعتمد على الجو).' }),
-  ...[1, 2, 3, 4, 5, 6, 7, 8].map(c => P(ECM, 0x1192 + c, `زمن فتح البخاخ — سلندر ${c}`, 'ms', b => u16(b) / 65.5, 'est', { d: 'مدة فتح البخاخ في كل دورة؛ البخاخات المتقاربة طبيعي.' })),
-  ...[1, 2, 3, 4].map(c => P(ECM, 0x1204 + c, `احتراق ناقص الآن — سلندر ${c}`, 'عدّة', b => b[0], 'est', { rg: { ok: [0, 2], warn: [0, 10], when: 'running' }, d: 'عدد مرات الاحتراق الناقص الحالية لهذا السلندر.' })),
-  ...[5, 6, 7, 8].map(c => P(ECM, 0x11e5 + c, `احتراق ناقص الآن — سلندر ${c}`, 'عدّة', b => b[0], 'est', { rg: { ok: [0, 2], warn: [0, 10], when: 'running' }, d: 'عدد مرات الاحتراق الناقص الحالية لهذا السلندر.' })),
-  ...[1, 2, 3, 4].map(c => P(ECM, 0x1200 + c, `سجل الاحتراق الناقص — سلندر ${c}`, 'عدّة', b => u16(b), 'est', { d: 'مجموع الاحتراق الناقص المسجّل لهذا السلندر.' })),
-  ...[5, 6, 7, 8].map(c => P(ECM, 0x11f3 + c, `سجل الاحتراق الناقص — سلندر ${c}`, 'عدّة', b => u16(b), 'est', { d: 'مجموع الاحتراق الناقص المسجّل لهذا السلندر.' })),
-  P(TCM, 0x1940, 'حرارة زيت القير', '°C', b => b[0] - 40, 'best', { rg: { ok: [40, 105], warn: [20, 120], when: 'running' }, d: 'حرارة زيت القير. فوق 120°C ضرر على الزيت والقير.' }),
+  ...[1, 2, 3, 4, 5, 6, 7, 8].map(c => P(ECM, 0x1192 + c, `زمن فتح البخاخ — سلندر ${c}`, 'ms', b => u16(b) / 65.5, 'est', { cyl: c, d: 'مدة فتح البخاخ في كل دورة؛ البخاخات المتقاربة طبيعي.' })),
+  ...[1, 2, 3, 4, 5, 6, 7, 8].map(c => P(ECM, c <= 4 ? 0x1204 + c : 0x11e5 + c, `احتراق ناقص الآن — سلندر ${c}`, 'عدّة', b => b[0], 'est', { cyl: c, rg: { ok: [0, 2], warn: [0, 10], when: 'running' }, d: 'عدد مرات الاحتراق الناقص الحالية لهذا السلندر.' })),
+  ...[1, 2, 3, 4, 5, 6, 7, 8].map(c => P(ECM, c <= 4 ? 0x1200 + c : 0x11f3 + c, `سجل الاحتراق الناقص — سلندر ${c}`, 'عدّة', b => u16(b), 'est', { cyl: c, d: 'مجموع الاحتراق الناقص المسجّل لهذا السلندر.' })),
+  P(TCM, 0x1940, 'حرارة زيت القير', '°C', b => b[0] - 40, 'best', { rg: { ok: [-40, 105], warn: [-40, 120], when: 'running' }, d: 'حرارة زيت القير. البارد طبيعي أول التشغيل ويسخن مع المشي؛ فوق 120°C ضرر على الزيت والقير.' }),
   P(TCM, 0x199A, 'الغيار الحالي', '', b => b[0], 'best', { d: 'رقم الغيار اللي القير فيه الآن.' }),
   P(TCM, 0x1991, 'انزلاق كلتش محوّل العزم', 'rpm', b => s16(b) / 8, 'est', { d: 'الفرق بين دوران المكينة ودخل القير. مع قفل الكلتش على السرعة يكون قريب من صفر.' }),
   P(TCM, 0x1992, 'زمن آخر تبديل غيار', 's', b => b[0] / 40, 'est', { d: 'كم استغرق آخر تبديل؛ الأطول من الطبيعي يعني انزلاق.' }),
@@ -40,18 +38,23 @@ let cursor = 0, pcursor = 0;
 // the ones that matter most are read on every round; the rest take turns
 const PRIORITY = new Set([0x1470, 0x1154, 0x1940, 0x199a, 0x1991, 0x11a6, 0x1141]);
 export const gmPidInfo = k => GM_PIDS.find(p => key(p) === k || ('22' + hex4(p.did)) === k);
+// position in the list above (the report keeps this order: cylinders 1, 2, 3…)
+export const gmOrder = k => { const i = GM_PIDS.findIndex(p => key(p) === k || ('22' + hex4(p.did)) === k); return i < 0 ? 999 : i; };
+// readings for cylinders the engine does not have are never asked for (a V6 has no cylinder 7)
+const cylOk = p => { const n = app.cylinders?.(); return !p.cyl || !n || p.cyl <= n; };
 
 // Reads a few of the readings (rotating), from inside the live poll. Returns live entries.
 export async function readGmBatch(max = 3) {
   const elm = app.conn.elm;
   if (!elm?.isCan || elm.is29 || app.vehicle.group !== 'GM') return [];
-  const list = GM_PIDS.filter(p => sup.get(key(p)) !== false);
+  const list = GM_PIDS.filter(p => sup.get(key(p)) !== false && cylOk(p));
   if (!list.length) return [];
   const pri = list.filter(p => PRIORITY.has(p.did)), rest = list.filter(p => !PRIORITY.has(p.did));
   const batch = [];
   if (pri.length) batch.push(pri[pcursor++ % pri.length]);
   while (batch.length < max && rest.length && batch.length < list.length) { const p = rest[cursor++ % rest.length]; if (batch.includes(p)) break; batch.push(p); }
   if (batch.length < max && pri.length > 1) batch.push(pri[pcursor++ % pri.length]);
+  batch.sort((a, b) => a.req - b.req); // one switch per computer
   const out = [];
   try {
     for (const p of batch) {
@@ -71,7 +74,7 @@ export async function readGmBatch(max = 3) {
   }
   return out;
 }
-export const gmSupported = () => GM_PIDS.filter(p => sup.get(key(p)) === true).length;
+export const gmSupported = () => GM_PIDS.filter(p => sup.get(key(p)) === true && cylOk(p)).length;
 export function resetGm() { sup.clear(); fails.clear(); cursor = 0; }
 
 /* ---------------- identification ---------------- */

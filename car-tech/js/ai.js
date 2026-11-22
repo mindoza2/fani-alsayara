@@ -1,6 +1,7 @@
 // "اسأل الفني": hybrid — Claude API (user's own key, stored locally) when online,
 // otherwise a small built-in rule model + the library of previously saved answers.
 import { store, settings } from './store.js';
+import { session } from './session.js';
 import { describeDtc } from './dtcdb.js';
 import { correlate } from './diag.js';
 import { uid } from './util.js';
@@ -31,7 +32,8 @@ export function buildContext(app) {
   if (r) lines.push('الجاهزية: ' + r);
   const live = app.liveSnapshot?.();
   if (live?.length) lines.push('قيم حية: ' + live.map(x => `${x.name}=${x.text}${x.unit}`).join('، '));
-  if (app.conn.voltage) lines.push(`فولت البطارية: ${app.conn.voltage.toFixed(2)}V`);
+  if (app.conn.voltage) lines.push(`فولت البطارية: ${app.conn.voltage.toFixed(2)}V${app.conn.voltSrc === 'ecm' ? ' (من كمبيوتر المكينة — القطعة تعطي رقم ثابت ما يتغير)' : ''}`);
+  try { const F = session.findings(); if (F.length) lines.push('ما تقوله القراءات الحية في الجلسة: ' + F.map(f => `${f.t} — ${f.d}`).join(' | ')); } catch {}
   const cr = chargeRange(v);
   if (cr.rvc) lines.push('نظام الشحن: ' + cr.note);
   // the analyst's findings, with each fault's circuit from the car's own wiring

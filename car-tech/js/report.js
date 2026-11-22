@@ -1,7 +1,7 @@
 // Standalone HTML reports (open anywhere, no internet needed).
 import { esc, fmtDate, fmtTime, safeImg } from './util.js';
 import { describeDtc } from './dtcdb.js';
-import { combineReadiness, readinessStats } from './obd.js';
+import { combineReadiness, readinessStats, m6State, M6_LABEL } from './obd.js';
 
 const CSS = `body{font-family:"IBM Plex Sans Arabic",Tahoma,sans-serif;background:#0a101a;color:#e6eefb;margin:0;padding:24px;line-height:1.6}
 .w{max-width:900px;margin:0 auto}h1{font-size:22px;margin:0}h2{font-size:17px;border-bottom:1px solid #22324d;padding-bottom:6px;margin-top:26px}
@@ -46,10 +46,10 @@ export function scanReportHtml(s, diag = []) {
   // the computer's own self-test results: failed tests, catalyst tests and misfire counters
   const fmt = v => (v == null || !Number.isFinite(v) ? '—' : Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 1 ? v.toFixed(2) : v.toFixed(4));
   const m6 = (s.mode06 || []).flatMap(m => (m.rows || []).map(r => ({ ...r, ecu: m.ecu })));
-  const m6show = m6.filter(r => !r.pass || (r.mid >= 0x21 && r.mid <= 0x24) || (r.mid >= 0xa2 && r.mid <= 0xad && r.value > 0));
+  const m6show = m6.filter(r => m6State(r) === 'fail' || (r.mid >= 0x21 && r.mid <= 0x24) || (r.mid >= 0xa2 && r.mid <= 0xad && r.value > 0));
   if (m6show.length) {
     h += '<h2>نتائج الاختبارات الذاتية (Mode 6)</h2><div class="card"><table><tr><th>الاختبار</th><th>القيمة</th><th>الحدود</th><th>النتيجة</th></tr>';
-    h += m6show.map(r => `<tr><td>${esc(r.midName)} <span class="dim">${esc(r.tidName)}${s.ecus?.some(e => e.key === 'std:' + r.ecu) && m6.some(x => x.ecu !== r.ecu) ? ' · ' + esc(ecuName(r.ecu)) : ''}</span></td><td class="mono">${fmt(r.value)} ${esc(r.unit || '')}</td><td class="mono dim">${fmt(r.min)} – ${fmt(r.max)}</td><td>${r.pass ? '<span class="ok">ناجح</span>' : '<span class="bad">راسب</span>'}</td></tr>`).join('');
+    h += m6show.map(r => `<tr><td>${esc(r.midName)} <span class="dim">${esc(r.tidName)}${s.ecus?.some(e => e.key === 'std:' + r.ecu) && m6.some(x => x.ecu !== r.ecu) ? ' · ' + esc(ecuName(r.ecu)) : ''}</span></td><td class="mono">${fmt(r.value)} ${esc(r.unit || '')}</td><td class="mono dim">${fmt(r.min)} – ${fmt(r.max)}</td><td><span class="${M6_LABEL[m6State(r)][0]}">${M6_LABEL[m6State(r)][1]}</span></td></tr>`).join('');
     h += '</table><div class="dim">تُعرض هنا الاختبارات الراسبة واختبارات الحفاز وعدّادات الاحتراق الناقص فقط. القيمة كما يحسبها الكمبيوتر — كلما اقتربت من الحد كان الهامش أضيق.</div></div>';
   }
   if (diag.length) {

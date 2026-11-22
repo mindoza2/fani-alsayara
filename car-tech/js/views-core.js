@@ -1,7 +1,7 @@
 // Phase-1 screens: dashboard, connection, network map, full scan, codes & OBD modes, readiness.
 import { $, $$, esc, bus, toast, modal, confirmAction, conf, fmtDate, hex2 } from './util.js';
 import { app, connectBle, connectDemo, disconnect, fullScan, moduleScan, clearVerified, rereadVerified, readStdCodes, readFreeze, readMode06, readReadiness, readVinNow, exclusive, setVehicle, decodeVin, startLive, stopLive, requireConn, vehDisplacement } from './core.js';
-import { PIDS, pidName, readinessStats } from './obd.js';
+import { PIDS, pidName, readinessStats, m6State, M6_LABEL } from './obd.js';
 import { terminalCheck } from './network.js';
 import { describeDtc, dtcSeverity } from './dtcdb.js';
 import { netmapSvg, NODE_COLORS, pidGauge, updatePidGauge } from './widgets.js';
@@ -415,7 +415,7 @@ export function codesView(c) {
     let body = '<div class="empty">لم تُقرأ بعد</div>';
     if (m?.legacy) body = `<div class="warn">السيارة على بروتوكول قديم: صيغة Mode 6 فيه خاصة بالمصنّع. الرد الخام: <span class="mono">${esc(m.raw)}</span> ${conf('est')}</div>`;
     else if (m?.map?.size) body = [...m.map.entries()].map(([ecu, rows]) => `<h3>${esc(app.ecus.get('std:' + ecu)?.name || ecu)}</h3><div class="tbl-wrap"><table class="tbl"><thead><tr><th>المراقب</th><th>الاختبار</th><th>القيمة</th><th>الحد الأدنى</th><th>الحد الأعلى</th><th>النتيجة</th></tr></thead><tbody>
-      ${rows.map(r => `<tr><td>${esc(r.midName)}</td><td class="small">${esc(r.tidName)}</td><td class="num">${fmt(r.value)} ${esc(r.unit)}</td><td class="num dim">${fmt(r.min)}</td><td class="num dim">${fmt(r.max)}</td><td>${r.pass ? '<span class="badge ok">ناجح</span>' : '<span class="badge err">راسب</span>'} ${r.known ? '' : conf('est')}</td></tr>`).join('')}</tbody></table></div>`).join('');
+      ${rows.map(r => `<tr><td>${esc(r.midName)}</td><td class="small">${esc(r.tidName)}</td><td class="num">${fmt(r.value)} ${esc(r.unit)}</td><td class="num dim">${fmt(r.min)}</td><td class="num dim">${fmt(r.max)}</td><td>${(st => st === 'fail' ? '<span class="badge err">راسب</span>' : st === 'pass' ? '<span class="badge ok">ناجح</span>' : `<span class="badge">${M6_LABEL[st][1]}</span>`)(m6State(r))} ${r.known ? '' : conf('est')}</td></tr>`).join('')}</tbody></table></div>`).join('');
     else if (m) body = '<div class="empty">الكمبيوتر لم يعلن عن نتائج Mode 6</div>';
     b.innerHTML = `<div class="card"><div class="row wrap" style="margin-bottom:10px"><div style="flex:1">نتائج الاختبارات الذاتية للمراقبات (يشمل عدّادات الاحتراق الناقص لكل سلندر إن توفرت) ${conf('sure')}</div>${btn('m6Read', 'قراءة')}</div>${m?.error ? `<div class="warn" style="margin-bottom:8px">تعذّرت القراءة: ${esc(m.error)}</div>` : ''}${body}</div>`;
     act(b, '#m6Read', readMode06);

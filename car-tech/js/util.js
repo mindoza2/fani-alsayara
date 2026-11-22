@@ -140,13 +140,31 @@ export async function shareFile(name, content, type = 'text/html') {
 }
 
 // Keep the screen on while something is being recorded (a locked phone suspends the page and the
-// Bluetooth link). Uses the Screen Wake Lock API where the browser offers it.
+// Bluetooth link). Uses the Screen Wake Lock API where the browser offers it; where it does not
+// (older iOS browsers such as Bluefy) a tiny silent video plays in a loop, which keeps iOS awake.
 export function keepAwake() {
-  let lock = null, on = true;
-  const get = async () => { try { if (on && document.visibilityState === 'visible' && navigator.wakeLock) lock = await navigator.wakeLock.request('screen'); } catch {} };
+  let lock = null, on = true, vid = null;
+  const video = () => {
+    try {
+      if (!vid) {
+        vid = document.createElement('video');
+        vid.setAttribute('playsinline', ''); vid.setAttribute('webkit-playsinline', ''); vid.setAttribute('aria-hidden', 'true');
+        vid.muted = true; vid.loop = true; vid.preload = 'auto';
+        vid.style.cssText = 'position:fixed;left:0;bottom:0;width:1px;height:1px;opacity:.01;pointer-events:none;z-index:-1';
+        vid.src = 'car-tech/nosleep.mp4';
+        document.body.appendChild(vid);
+      }
+      vid.play()?.catch?.(() => {});
+    } catch {}
+  };
+  const get = async () => {
+    if (!on || document.visibilityState !== 'visible') return;
+    if (navigator.wakeLock) { try { lock = await navigator.wakeLock.request('screen'); return; } catch {} }
+    video();
+  };
   const vis = () => { if (document.visibilityState === 'visible') get(); };
   get(); document.addEventListener('visibilitychange', vis);
-  return { supported: !!navigator.wakeLock, release: () => { on = false; document.removeEventListener('visibilitychange', vis); try { lock?.release()?.catch?.(() => {}); } catch {} lock = null; } };
+  return { supported: !!navigator.wakeLock, release: () => { on = false; document.removeEventListener('visibilitychange', vis); try { lock?.release()?.catch?.(() => {}); } catch {} lock = null; try { vid?.pause(); vid?.remove(); } catch {} vid = null; } };
 }
 
 // Linear regression → {slope, intercept, r2}

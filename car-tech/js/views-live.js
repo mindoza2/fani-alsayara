@@ -1,6 +1,6 @@
 // Live data, trip recorder / guided tests, predictive trends, phone sensors.
 import { $, $$, esc, bus, toast, conf, fmtDate, fmtTime, uid, sleep, linreg, download, shareFile, confirmAction, safeImg, withTimeout, keepAwake } from './util.js';
-import { app, startLive, stopLive, requireConn } from './core.js';
+import { app, startLive, stopLive, requireConn, readVoltNow } from './core.js';
 import { PIDS, pidName, rangeStatus, VOLT_RANGES, chargeRange } from './obd.js';
 import { pidGauge, updatePidGauge, drawChart, sparkline } from './widgets.js';
 import { trimAnalysis } from './diag.js';
@@ -137,7 +137,7 @@ export function liveView(c) {
     const vb = $('#lVolt', c);
     if (vb) {
       const run = ctx.running, V = app.conn.voltage, r = run ? ctx.charge : VOLT_RANGES.off;
-      vb.innerHTML = `<dl class="kv"><dt>فولت البطارية (من القطعة)</dt><dd class="num">${V ? V.toFixed(2) + ' V' : '—'} ${V ? (V >= r.ok[0] && V <= r.ok[1] ? '<span class="badge ok">طبيعي</span>' : '<span class="badge warn">خارج المعتاد</span>') : ''}</dd>
+      vb.innerHTML = `<dl class="kv"><dt>فولت البطارية (${app.conn.voltSrc === 'ecm' ? 'القطعة ما تقيسه فعليًا — من كمبيوتر المكينة' : 'من القطعة'})</dt><dd class="num">${V ? V.toFixed(2) + ' V' : '—'} ${V ? (V >= r.ok[0] && V <= r.ok[1] ? '<span class="badge ok">طبيعي</span>' : '<span class="badge warn">خارج المعتاد</span>') : ''}</dd>
         ${vals[0x42] != null ? `<dt>فولت كمبيوتر المكينة</dt><dd class="num">${vals[0x42].toFixed(2)} V ${V ? `<span class="small dim">(الفرق ${Math.abs(V - vals[0x42]).toFixed(2)}V)</span>` : ''}</dd>` : ''}
         <dt>المتوقع الآن</dt><dd>${run ? (ctx.charge.rvc ? esc(ctx.charge.note) : 'شغالة: 13.5–14.8V') : 'طافية: 12.4–12.7V'}</dd></dl><a class="btn sm" href="#/trip?test=crank" style="margin-top:6px">اختبار التدوير (Cranking)</a> <a class="btn sm" href="#/trip?test=charge" style="margin-top:6px">اختبار الشحن</a>`;
     }
@@ -376,7 +376,7 @@ export function tripView(c) {
       me.waiting = true; renderRun();
       await sleep(app.demo ? 1500 : 3000);
       if (run !== me) return;
-      const vs = []; for (let i = 0; i < 5; i++) { const v = await app.conn.elm?.voltage(); if (v) vs.push(v); await sleep(200); }
+      const vs = []; for (let i = 0; i < 5; i++) { const v = await readVoltNow(); if (v) vs.push(v); await sleep(200); }
       const avg = vs.length ? vs.reduce((a, b) => a + b, 0) / vs.length : null;
       me.res[stp.sample] = avg; if (run === me) me.ev(`${stp.t}: ${avg ? avg.toFixed(2) + 'V' : 'لا قراءة'}`);
     }
@@ -389,7 +389,8 @@ export function tripView(c) {
     const vs = []; const t0 = Date.now(); run.ev('بدأ تسجيل الفولت السريع — دوّر المكينة الآن');
     if (app.demo) setTimeout(() => app.conn.transport.crank(), 1500);
     const me = run;
-    while (Date.now() - t0 < 8000 && run === me) { if (!app.conn.elm) { await sleep(200); continue; } const v = await app.conn.elm.voltage(); if (v) vs.push([Date.now(), v]); const i = c.querySelector('#rProg i'); if (i) i.style.width = ((Date.now() - t0) / 80) + '%'; }
+    if (app.conn.voltFrozen) run.ev('القطعة ما تقيس الفولت فعليًا (رقمها ثابت) — الفولت هنا من كمبيوتر المكينة، وقد ينقطع لحظة التدوير. للدقة قِس بملتيميتر على البطارية.', 'warn');
+    while (Date.now() - t0 < 8000 && run === me) { if (!app.conn.elm) { await sleep(200); continue; } const v = await readVoltNow(); if (v) vs.push([Date.now(), v]); const i = c.querySelector('#rProg i'); if (i) i.style.width = ((Date.now() - t0) / 80) + '%'; }
     if (run !== me) return;
     if (!vs.length) { run.res = { min: null }; finish(); return; }
     const min = Math.min(...vs.map(x => x[1]));

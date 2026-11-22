@@ -77,9 +77,10 @@ function statusBar() {
   const vEl = $('#voltVal'), vDot = $('#voltChip .dot');
   bus.on('volt', v => {
     vEl.textContent = v == null ? '--.-' : v.toFixed(1);
-    const running = app.running(), cr = chargeRange(app.vehicle); // GM RVC lowers charging on purpose
+    const running = app.running(), cr = chargeRange(app.vehicle, app.conn.voltSrc === 'ecm' ? '7E8' : null); // GM RVC lowers charging on purpose
     vDot.className = 'dot ' + (v == null ? '' : running ? (v >= cr.ok[0] && v <= cr.ok[1] ? 'on' : v >= cr.warn[0] && v <= cr.warn[1] ? 'busy' : 'err') : v >= 12.3 ? 'on' : v >= 11.9 ? 'busy' : 'err');
   });
+  bus.on('voltsrc', d => { if (d.frozen) toast(`القطعة تعطي فولت ثابت (${d.adapter.toFixed(1)}V) ما يتغير، بينما كمبيوتر المكينة يقرا ${d.ecmMin.toFixed(2)}–${d.ecmMax.toFixed(2)}V — صار الفولت من كمبيوتر المكينة`, 'warn'); });
   bus.on('demo', d => $('#demoFlag').classList.toggle('hidden', !d));
   const badges = () => {
     const n = app.allDtcs().length;

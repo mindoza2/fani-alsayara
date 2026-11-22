@@ -45,7 +45,38 @@ export const app = {
   trims() { return trimAnalysis(this.samples.slice(-600)); },
 };
 // Engine size of the car that is connected now (kept per vehicle: two cars must not share it).
-export function vehDisplacement() { return app.vehicle.displacement ?? (app.vehicle.vin ? null : settings().displacement) ?? null; }
+// Entered by hand first; else what the VIN says (not for a swapped engine); else the old setting.
+export function vehDisplacement() {
+  const v = app.vehicle;
+  if (v.displacement != null && v.displacement !== '') return v.displacement;
+  const e = !v.mods?.swap && v.vin ? decodeVin(v.vin).engine : null;
+  if (e) return e.disp;
+  return v.vin ? null : settings().displacement ?? null;
+}
+// Number of cylinders: from the engine computer's own misfire self-tests (one per cylinder), else
+// the VIN's engine code (not for a swapped engine). null = unknown.
+export function vehCylinders() {
+  const m6 = app.mode06?.map ? [...app.mode06.map.values()].flat() : [];
+  const mis = m6.filter(r => r.mid >= 0xa2 && r.mid <= 0xad).map(r => r.mid - 0xa1);
+  if (mis.length >= 3) return Math.max(...mis);
+  const v = app.vehicle;
+  const e = !v.mods?.swap && v.vin ? decodeVin(v.vin).engine : null;
+  return e?.cyl || null;
+}
+app.cylinders = vehCylinders;
+// One battery reading now: the adapter's own (AT RV), or — for an adapter that answers a frozen
+// number — the engine computer's reading of its supply (PID 42; it answers with the key ON too).
+export async function readVoltNow() {
+  const c = app.conn; if (!c.elm) return null;
+  if (!c.voltFrozen) return c.elm.voltage();
+  try {
+    const r = await app.obd.readPids([0x42]);
+    const all = [...r.values()].filter(v => v.pid === 0x42 && v.value != null);
+    const v = all.find(x => x.ecu === '7E8') || all[0];
+    if (v) { c.noteEcuVolt(v.value); return v.value; }
+  } catch {}
+  return null;
+}
 
 /* ---------------- reference library ---------------- */
 export async function loadLibrary() {
@@ -209,7 +240,16 @@ export function decodeVin(vin) {
   // North-American convention: a letter in position 7 means the 2010–2039 cycle
   if (year && /[A-Z]/.test(vin[6]) && year + 30 <= new Date().getFullYear() + 1) year += 30;
   const make = WMI[vin.slice(0, 3)] || WMI[vin.slice(0, 2)] || null;
-  return { valid: true, vin, checkOk: vin[8] === cd, make, group: make ? MAKE_GROUP(make) : null, year, wmi: vin.slice(0, 3), serial: vin.slice(11) };
+  return { valid: true, vin, checkOk: vin[8] === cd, make, group: make ? MAKE_GROUP(make) : null, year, wmi: vin.slice(0, 3), serial: vin.slice(11), engine: gmTruckEngine(vin, year) };
+}
+// GM full-size trucks and SUVs (GMT900, 2007–2013): the 8th character of the VIN is the engine.
+// Only the codes confirmed for those years; anything else stays unknown.
+const GMT900_ENG = { X: [4.3, 6, 'LU3 4.3L V6'], A: [4.8, 8, 'L20 4.8L V8'], 0: [5.3, 8, 'LMG 5.3L V8'], 3: [5.3, 8, 'LC9 5.3L V8'], 2: [6.2, 8, 'L9H 6.2L V8'], F: [6.2, 8, 'L94 6.2L V8'] };
+function gmTruckEngine(vin, year) {
+  if (!/^[123]G[CTNK]/.test(vin) || !year || year < 2007 || year > 2013) return null;
+  const c = vin[7];
+  if (year < 2010 && c !== 'X') return null;
+  const e = GMT900_ENG[c]; return e ? { disp: e[0], cyl: e[1], name: e[2], src: 'vin' } : null;
 }
 const ACRO = { ECM: 'كمبيوتر المكينة', PCM: 'كمبيوتر المكينة والقير', TCM: 'كمبيوتر القير', HCU: 'كمبيوتر الهجين', HPCM: 'كمبيوتر الهجين', BCM: 'كمبيوتر الهيكل', ABS: 'كمبيوتر الفرامل', FICM: 'كمبيوتر البخاخات', GPCM: 'كمبيوتر شمعات التسخين', DPFC: 'كمبيوتر فلتر الجزيئات', BECM: 'كمبيوتر البطارية', FPCM: 'كمبيوتر طرمبة البنزين', TCCM: 'كمبيوتر علبة التوزيع (الدبل)', SCRC: 'كمبيوتر نظام SCR' };
 export async function autoVin() {
@@ -464,7 +504,8 @@ export function startLive({ fast = [], slow = [], onTick = () => {}, rateMs = 0 
             const h = app.hist.get(e.key) || []; h.push([now, e.value]); if (h.length > 600) h.splice(0, h.length - 600); app.hist.set(e.key, h);
           }
         }
-        if (n % 3 === 0 && app.conn.elm?.info.caps.voltage) { const vv = await app.conn.elm.voltage(); if (vv != null) { app.conn.voltage = vv; bus.emit('volt', vv); } }
+        for (const v of r.values()) if (v.pid === 0x42 && v.ecu === '7E8' && v.value != null) app.conn.noteEcuVolt(v.value);
+        if (n % 3 === 0 && app.conn.elm?.info.caps.voltage) { const vv = await app.conn.elm.voltage(); if (vv != null) app.conn.noteAdapterVolt(vv); }
         const lv = app.liveValues();
         if (lv[0x0c] != null) app.samples.push({ t: now, rpm: lv[0x0c], stft1: lv[0x06], ltft1: lv[0x07], stft2: lv[0x08], ltft2: lv[0x09], maf: lv[0x10], load: lv[0x04], ect: lv[0x05], volt: app.conn.voltage, speed: lv[0x0d] });
         if (app.samples.length > 3000) app.samples.splice(0, 1000);

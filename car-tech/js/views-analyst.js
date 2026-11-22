@@ -6,6 +6,7 @@ import { PIDS } from './obd.js';
 import { params } from './nav.js';
 import { analyze, analysisCtx, AREA } from './analyst.js';
 import { srcBadge } from './wiring-gm.js';
+import { session } from './session.js';
 
 const connected = () => app.conn.ready;
 const areaBadge = a => `<span class="badge" style="border-color:${AREA[a][1]};color:${AREA[a][1]}">${AREA[a][0]}</span>`;
@@ -24,6 +25,7 @@ export function diagView(c) {
       <div class="small muted">لكل عطل: يتتبّع دائرته في مخطط سيارتك، ويجمع الأدلة من القراءات الحية ولقطة اللحظة والأكواد الثانية والكمبيوترات اللي ترد، ويحلل السبب من ثلاث زوايا: ${areaBadge('elec')} ${areaBadge('mech')} ${areaBadge('soft')}. بعدها يمشيك بالفحص على السيارة خطوة خطوة لين يوصل للسبب. النسب ترجيحية ${conf('est')}.</div>
       <div class="row wrap small" style="margin-top:8px;gap:6px"><span class="badge">${dt.length} عطل</span><span class="badge">${app.samples.length} عينة حية</span>${app.mode06?.map?.size ? '<span class="badge ok">نتائج Mode 6</span>' : ''}${app.conn.voltage ? `<span class="badge">فولت ${app.conn.voltage.toFixed(1)}V</span>` : ''}${plat ? `<span class="badge ok">مخطط سيارتك: ${esc(plat.title)}</span>` : '<span class="badge">مخططات عامة</span>'}</div>
       <div class="small" style="margin-top:8px">تعديلات سيارتك: ${ml.length || mods.notes ? `<b>${esc(ml.join('، '))}</b>${mods.notes ? ` <span class="dim">— ${esc(mods.notes)}</span>` : ''}` : '<span class="dim">ما سجّلت تعديلات</span>'} <a href="#/connect" class="small">تعديل</a> <span class="dim">(السواب والتيون يغيّرون ترجيح الأسباب)</span></div></div>
+      ${(() => { const F = session.findings(); return F.length ? `<div class="card raised" style="margin-top:14px"><div class="card-head"><h2>ما تقوله القراءات الحية (الجلسة الحالية)</h2>${conf('est')}</div>${F.map(f => `<div class="small" style="margin:8px 0"><b class="${f.kind === 'bad' ? 'err-t' : f.kind === 'warn' ? 'warn' : ''}">${esc(f.t)}</b>${AREA[f.area] ? ' ' + areaBadge(f.area) : ''}<div class="dim">${esc(f.d)}</div></div>`).join('')}</div>` : ''; })()}
       ${shared.length ? `<div class="card raised" style="margin-top:14px"><div class="card-head"><h2>سبب مشترك محتمل</h2>${conf('est')}</div>${shared.map(s => `<div class="warn small" style="margin:6px 0"><b>${esc(s.t)}</b> — ${esc(s.why)} <span class="mono dim">${esc([...new Set(s.codes)].join(' · '))}</span></div>`).join('')}</div>` : ''}
       ${items.length ? items.map((it, i) => itemHtml(it, i)).join('') : `<div class="card" style="margin-top:14px"><div class="empty"><div class="big">✦</div>${app.lastScan ? 'لا توجد أعطال أو قيم غير طبيعية تستدعي التحليل.' : 'شغّل الفحص الشامل أولًا ليبدأ التحليل.'}</div></div>`}`;
     $('#gLive', c)?.addEventListener('click', e => {

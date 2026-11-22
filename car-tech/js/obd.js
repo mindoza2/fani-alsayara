@@ -124,12 +124,24 @@ export const VOLT_RANGES = { off: { ok: [12.4, 12.9], warn: [12.0, 13.1] }, runn
 // use Regulated Voltage Control (RVC): with a charged battery and light loads the computer lowers
 // charging on purpose to about 12.6–13.1V ("fuel economy mode") and raises it under load — normal
 // operation, not a weak alternator. Elsewhere the classic 13.5–14.8V applies.
-export function chargeRange(v = {}) {
+// module: a computer's own reading of its supply ('7E8' engine computer, others read a little lower
+// through their wiring) — a battery reading when left out.
+export function chargeRange(v = {}, module = null) {
   const rvc = v?.group === 'GM' && (+v?.year || 0) >= 2007;
+  const d = !module ? 0 : module === '7E8' ? 0.2 : 0.4;
+  const lo = (a, b) => [Math.round((a - d) * 10) / 10, b];
   return rvc
-    ? { ok: [12.6, 14.8], warn: [12.4, 15.2], rvc: true, note: 'جنرال موتورز (نظام RVC): 12.6–13.1V بدون أحمال والبطارية مشحونة طبيعي، وتحت حِمل (أنوار/مكيف/مروحة) يرتفع إلى ~13.9–14.5V' }
-    : { ok: [13.5, 14.8], warn: [13.0, 15.2], rvc: false, note: '' };
+    ? { ok: lo(12.6, 14.8), warn: lo(12.4, 15.2), rvc: true, note: 'جنرال موتورز (نظام RVC): 12.6–13.1V بدون أحمال والبطارية مشحونة طبيعي، وتحت حِمل (أنوار/مكيف/مروحة) يرتفع إلى ~13.9–14.5V' }
+    : { ok: lo(13.5, 14.8), warn: lo(13.0, 15.2), rvc: false, note: '' };
 }
+// A self-test row: 'notrun' (cleared, not run yet), 'const' (a calibration value, not a test),
+// 'pass' or 'fail'. Rows saved before 'notRun' existed are judged from their numbers.
+export function m6State(r) {
+  if (r.notRun ?? (r.value === 0 && r.min === 0 && r.max === 0)) return 'notrun';
+  if (r.mid >= 0x01 && r.mid <= 0x10 && r.tid >= 0x01 && r.tid <= 0x04 && r.min === r.max && r.value === r.min) return 'const';
+  return r.pass ? 'pass' : 'fail';
+}
+export const M6_LABEL = { notrun: ['dim', 'ما اشتغل بعد'], const: ['dim', 'قيمة معايرة ثابتة'], pass: ['ok', 'ناجح'], fail: ['bad', 'راسب'] };
 
 /* ------------------------------ DTCs ------------------------------ */
 export function dtcFromBytes(a, b) {
@@ -402,7 +414,9 @@ export class Obd {
             const tid = b[i + 1], uas = b[i + 2];
             const val = uasVal(uas, b[i + 3], b[i + 4]), mn = uasVal(uas, b[i + 5], b[i + 6]), mx = uasVal(uas, b[i + 7], b[i + 8]);
             const pass = val.v >= mn.v && val.v <= mx.v;
-            rows.push({ mid, tid, midName: midName(mid), tidName: tidName(mid, tid), value: val.v, min: mn.v, max: mx.v, unit: val.unit, known: val.known, pass });
+            // all six bytes zero = the test has not run since the codes were cleared (not a pass)
+            const notRun = [3, 4, 5, 6, 7, 8].every(k => b[i + k] === 0);
+            rows.push({ mid, tid, midName: midName(mid), tidName: tidName(mid, tid), value: val.v, min: mn.v, max: mx.v, unit: val.unit, known: val.known, pass, notRun });
           }
         }
       }

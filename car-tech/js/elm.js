@@ -157,17 +157,23 @@ export class Elm {
     this._auto = true;
   }
   // Physical addressing to one module on 11-bit CAN, with receive filter + flow control.
+  // Already talking to that module → nothing to send; switching between modules only changes the
+  // header, the filter and the flow-control header (the flow-control mode stays set).
   async physical(req, res) {
+    const k = hex3(req) + ':' + hex3(res);
+    if (this._physical && this._phys === k && this.curHeader === hex3(req)) return;
+    const fcSet = this._physical && this.curHeader != null;
     this._auto = false;
     await this.setHeader(hex3(req));
     await this.at('CRA' + hex3(res));
-    await this.at('FCSH' + hex3(req)); await this.at('FCSD300000'); await this.at('FCSM1');
-    this._physical = true;
+    await this.at('FCSH' + hex3(req));
+    if (!fcSet) { await this.at('FCSD300000'); await this.at('FCSM1'); }
+    this._physical = true; this._phys = k;
   }
   async clearPhysical() {
     if (!this._physical) return;
-    await this.at('CRA'); await this.at('FCSM0'); await this.at('AR');
-    this._physical = false; this._auto = false; await this.functional();
+    await this.at('CRA'); await this.at('FCSM0');
+    this._physical = false; this._phys = null; this._auto = false; await this.functional();
   }
 
   // ---------------- requests ----------------
@@ -231,12 +237,44 @@ export class Connection {
   constructor() {
     this.state = 'off'; this.elm = null; this.transport = null; this.voltage = null; this.manual = false;
     this.attempts = 0; this.vTimer = null; this.lastLog = []; this.gen = 0;
+    this.atrv = []; this.ecuV = []; this.voltFrozen = false; this.voltSrc = null; this.rawVoltage = null;
   }
+  // Battery voltage. The adapter's own reading (AT RV) is used, unless that adapter answers the same
+  // number for minutes while the engine computer's reading of its supply moves (seen on a KONNWEI
+  // KDIAG: 13.3V for a whole drive) — then the engine computer's reading is the voltage.
+  noteAdapterVolt(v) {
+    this.rawVoltage = v; this.atrv.push([Date.now(), v]); if (this.atrv.length > 60) this.atrv.shift();
+    this._checkFrozen();
+    if (!this.voltFrozen) this._setV(v, 'adapter');
+  }
+  noteEcuVolt(v) {
+    if (!(v > 5 && v < 20)) return;
+    this.ecuV.push([Date.now(), v]); if (this.ecuV.length > 120) this.ecuV.shift();
+    this._checkFrozen();
+    if (this.voltFrozen) this._setV(v, 'ecm');
+  }
+  _checkFrozen() {
+    if (this.voltFrozen) return;
+    const now = Date.now(), W = 150000;
+    const a = this.atrv.filter(p => now - p[0] <= W), e = this.ecuV.filter(p => now - p[0] <= W);
+    if (a.length < 6 || e.length < 6 || a.at(-1)[0] - a[0][0] < 45000) return;
+    const span = x => Math.max(...x.map(p => p[1])) - Math.min(...x.map(p => p[1]));
+    if (span(a) < 0.05 && span(e) >= 0.15) {
+      this.voltFrozen = true;
+      try { localStorage.setItem('voltFrozen:' + (this.transport?.name || ''), '1'); } catch {}
+      bus.emit('voltsrc', { frozen: true, adapter: a.at(-1)[1], ecm: e.at(-1)[1], ecmMin: Math.min(...e.map(p => p[1])), ecmMax: Math.max(...e.map(p => p[1])) });
+      this._setV(e.at(-1)[1], 'ecm');
+    }
+  }
+  _setV(v, src) { this.voltage = v; this.voltSrc = src; bus.emit('volt', v); }
   set(state, msg) { this.state = state; bus.emit('conn', { state, msg }); }
   async open(transport, progress = () => {}) {
     this.gen++; // a reconnect loop from an older connection must never act on this one
     this.manual = false;
     this.transport = transport;
+    this.atrv = []; this.ecuV = []; this.voltSrc = null; this.rawVoltage = null;
+    // an adapter already seen answering a frozen voltage starts on the engine computer's reading
+    try { this.voltFrozen = localStorage.getItem('voltFrozen:' + (transport.name || '')) === '1'; } catch { this.voltFrozen = false; }
     transport.onDisconnect = () => this._lost();
     this.set('connecting', 'جارٍ الاتصال…');
     try {
@@ -260,7 +298,7 @@ export class Connection {
     const tick = async () => {
       if (!this.elm || !['on', 'adapter'].includes(this.state) || this.pauseVolt) return;
       const v = await this.elm.voltage();
-      if (v != null) { this.voltage = v; bus.emit('volt', v); }
+      if (v != null) this.noteAdapterVolt(v);
     };
     tick(); this.vTimer = setInterval(tick, 4000);
   }
